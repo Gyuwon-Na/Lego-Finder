@@ -1,0 +1,22 @@
+services:
+  backend:
+    image: python:3.13-slim
+    working_dir: /app/backend
+    command: sh -c "pip install --no-cache-dir -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - REBRICKABLE_API_KEY=${REBRICKABLE_API_KEY:-}
+
+  frontend:
+    image: python:3.13-slim
+    working_dir: /app/frontend
+    command: python -m http.server 5173
+    volumes:
+      - .:/app
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend

@@ -1,0 +1,6 @@
+# Optional production/model dependencies.
+# Install only when you are ready to use trained models or ANN binaries.
+hnswlib
+transformers
+torch
+ultralytics

@@ -8,6 +8,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+.dist/
 build/
 develop-eggs/
 dist/
@@ -143,6 +144,12 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# BrickFinder generated local artifacts
+data/demo/
+data/search_results/
+data/synthetic/
+data/rebrickable/images/
 
 # Spyder project settings
 .spyderproject
