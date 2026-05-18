@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from .catalog import COLORS
-from .proposals import OpenCVCandidateProposalModel, Proposal, color_mask
+from .proposals import YoloSegCandidateProposalModel, Proposal, color_mask
 from .query_parser import parse_query
 from .vector_index import PartVectorIndex, cosine, proposal_embedding, text_part_embedding
 
@@ -51,7 +51,7 @@ MOBILE_ACCURACY_PROFILE = {
 }
 
 PART_INDEX = PartVectorIndex()
-PROPOSAL_MODEL = OpenCVCandidateProposalModel(max_side=MOBILE_ACCURACY_PROFILE["proposal_max_side"])
+PROPOSAL_MODEL = YoloSegCandidateProposalModel(max_side=MOBILE_ACCURACY_PROFILE["proposal_max_side"])
 
 
 def search_image_bytes(image_bytes: bytes, query: str, max_results: int = 8) -> dict[str, Any]:
@@ -80,8 +80,9 @@ def search_image_bytes(image_bytes: bytes, query: str, max_results: int = 8) -> 
             "vector_index": f"{PART_INDEX.backend}; hnswlib is used automatically when installed",
             "index_records": len(PART_INDEX.payloads),
             "candidate_proposal": PROPOSAL_MODEL.name,
-            "segmentation": "OpenCV color connected components; replaceable with YOLO/SAM/MobileNet",
+            "segmentation": PROPOSAL_MODEL.status,
             "verification": "color dominance + dimension geometry + RANSAC corner homography fallback",
+            "prompt_understanding": "structured target spec with color/dimensions/category/height/shape/negative terms; CLIP-ready",
             "ar_rendering": "scripts/search_image.py can save annotation and AR-style overlay images",
         },
     }
@@ -111,62 +112,94 @@ def find_target_detections(
 def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, max_results: int = 8) -> list[Detection]:
     expected_ratio = max(target.width, target.length) / max(1, min(target.width, target.length))
     target_vector = text_part_embedding(target)
+    image_area = max(1, image.shape[0] * image.shape[1])
+    min_target_area = max(240, int(image_area * 0.0005))
+    expected_studs = max(1, target.width * target.length)
+    expected_bbox_area = image_area * 0.024 * (expected_studs / 8) ** 0.72
     detections: list[Detection] = []
 
+    candidate_features = target_color_image_components(image, target.colorKey)
     for proposal in proposals:
-        for box_features in target_color_subproposals(image, proposal, target.colorKey):
-            target_share = box_features["colorShares"].get(target.colorKey, 0.0)
-            if target_share < 0.08:
-                continue
-            aspect_ratio = box_features["aspectRatio"]
-            fill_ratio = box_features["fillRatio"]
-            dominant_color = box_features["dominantColorKey"]
-            shape_score = ratio_score(aspect_ratio, expected_ratio)
-            embedding_score = cosine(
-                proposal_embedding(dominant_color, aspect_ratio, fill_ratio, target),
-                target_vector,
-            )
-            ransac = verify_geometry(image, box_features, expected_ratio)
-            ransac_score = ransac["score"]
-            vector_score = embedding_score
+        candidate_features.extend(target_color_subproposals(image, proposal, target.colorKey))
+    if needs_local_window_search(image, proposals):
+        candidate_features.extend(target_color_search_windows(image, target.colorKey, expected_ratio, expected_bbox_area))
 
-            score = (
-                target_share * 0.34
-                + shape_score * 0.21
-                + embedding_score * 0.17
-                + box_features["proposalScore"] * 0.14
-                + ransac_score * 0.14
-            )
-            if dominant_color != target.colorKey:
-                score *= 0.72
-            if target_share < 0.35:
-                score *= 0.45
-            elif target_share < 0.55:
-                score *= 0.68
-            elif target_share < 0.72:
-                score *= 0.82
+    for box_features in candidate_features:
+        target_share = box_features["colorShares"].get(target.colorKey, 0.0)
+        if target_share < 0.08:
+            continue
+        if box_features["area"] < min_target_area:
+            continue
+        aspect_ratio = box_features["aspectRatio"]
+        fill_ratio = box_features["fillRatio"]
+        dominant_color = box_features["dominantColorKey"]
+        shape_score = ratio_score(aspect_ratio, expected_ratio)
+        bbox_area = max(1, box_features["bbox"]["width"] * box_features["bbox"]["height"])
+        color_area_score = min(1.0, box_features["area"] / max(1.0, expected_bbox_area * 0.55))
+        bbox_size_score = size_floor_score(bbox_area, expected_bbox_area)
+        embedding_score = cosine(
+            proposal_embedding(dominant_color, aspect_ratio, fill_ratio, target),
+            target_vector,
+        )
+        ransac = verify_geometry(image, box_features, expected_ratio)
+        ransac_score = ransac["score"]
+        keypoint_score = min(1.0, ransac["inliers"] / max(8.0, expected_studs * 8.0 + 8.0))
+        vector_score = embedding_score
+        border_score = border_containment_score(image, box_features["bbox"])
 
-            detections.append(
-                Detection(
-                    rank=0,
-                    score=round(float(min(score, 0.999)), 4),
-                    bbox=box_features["bbox"],
-                    area=box_features["area"],
-                    aspectRatio=round(float(aspect_ratio), 3),
-                    fillRatio=round(float(fill_ratio), 3),
-                    colorDominance=round(float(target_share), 3),
-                    shapeScore=round(float(shape_score), 3),
-                    solidity=round(float(box_features["solidity"]), 3),
-                    proposalScore=round(float(box_features["proposalScore"]), 4),
-                    embeddingScore=round(float(embedding_score), 4),
-                    vectorScore=round(float(vector_score), 4),
-                    dominantColorKey=dominant_color,
-                    colorShares=box_features["colorShares"],
-                    ransac=ransac,
-                )
-            )
+        score = (
+            target_share * 0.17
+            + bbox_size_score * 0.24
+            + keypoint_score * 0.16
+            + shape_score * 0.09
+            + embedding_score * 0.10
+            + box_features["proposalScore"] * 0.09
+            + color_area_score * 0.07
+            + ransac_score * 0.06
+            + border_score * 0.02
+        )
+        if bbox_area < expected_bbox_area * 0.32:
+            score *= 0.58
+        elif bbox_area < expected_bbox_area * 0.48:
+            score *= 0.78
+        if bbox_area > image_area * 0.42:
+            score *= 0.62
+        if dominant_color != target.colorKey:
+            score *= 0.72
+        if target_share < 0.35:
+            score *= 0.45
+        elif target_share < 0.55:
+            score *= 0.68
+        elif target_share < 0.72:
+            score *= 0.82
+        score *= border_score
 
-    ranked = sorted(detections, key=lambda item: item.score, reverse=True)[:max_results]
+        detections.append(
+            Detection(
+                rank=0,
+                score=round(float(min(score, 0.999)), 4),
+                bbox=box_features["bbox"],
+                area=box_features["area"],
+                aspectRatio=round(float(aspect_ratio), 3),
+                fillRatio=round(float(fill_ratio), 3),
+                colorDominance=round(float(target_share), 3),
+                shapeScore=round(float(shape_score), 3),
+                solidity=round(float(box_features["solidity"]), 3),
+                proposalScore=round(float(box_features["proposalScore"]), 4),
+                embeddingScore=round(float(embedding_score), 4),
+                vectorScore=round(float(vector_score), 4),
+                dominantColorKey=dominant_color,
+                colorShares=box_features["colorShares"],
+                ransac=ransac,
+            )
+        )
+
+    ranked = non_max_suppression(
+        sorted(detections, key=lambda item: item.score, reverse=True),
+        iou_threshold=0.30,
+        overlap_threshold=0.55,
+    )
+    ranked = ranked[:max_results]
     return [
         Detection(**{**detection.to_dict(), "rank": index + 1})
         for index, detection in enumerate(ranked)
@@ -187,7 +220,7 @@ def target_color_subproposals(image: np.ndarray, proposal: Proposal, color_key: 
         return []
     crop = image[y : y + h, x : x + w]
     hsv = cv2.cvtColor(cv2.GaussianBlur(crop, (3, 3), 0), cv2.COLOR_BGR2HSV)
-    mask = color_mask(hsv, color_key)
+    mask = target_component_mask(hsv, color_key)
     kernel = np.ones((3, 3), dtype=np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
@@ -210,6 +243,121 @@ def target_color_subproposals(image: np.ndarray, proposal: Proposal, color_key: 
     if features:
         return sorted(features, key=lambda item: item["proposalScore"], reverse=True)
     return [box_features(image, proposal.bbox, proposal.proposalScore)] if proposal.colorShares.get(color_key, 0.0) >= 0.08 else []
+
+
+def target_color_image_components(image: np.ndarray, color_key: str) -> list[dict[str, Any]]:
+    """Add target-color components from the whole image.
+
+    The generic proposal stage may miss neutral pieces or split saturated pieces
+    oddly. This target-conditioned pass gives the verifier a direct chance to
+    rank color components that were not covered by the first proposal set.
+    """
+
+    hsv = cv2.cvtColor(cv2.GaussianBlur(image, (3, 3), 0), cv2.COLOR_BGR2HSV)
+    mask = target_component_mask(hsv, color_key)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    image_area = max(1, image.shape[0] * image.shape[1])
+    min_area = max(90, int(image_area * 0.00012))
+    max_area = int(image_area * 0.42)
+    features: list[dict[str, Any]] = []
+    for contour in contours:
+        area = int(cv2.contourArea(contour))
+        if area < min_area or area > max_area:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 8 or h < 8:
+            continue
+        bbox_area = max(1, w * h)
+        fill_ratio = int(np.count_nonzero(mask[y : y + h, x : x + w])) / bbox_area
+        if fill_ratio < 0.14:
+            continue
+        base_score = min(0.999, fill_ratio * 0.36 + min(1.0, area / 2200) * 0.34 + 0.18)
+        features.append(box_features(image, {"x": x, "y": y, "width": w, "height": h}, base_score))
+    return features
+
+
+def target_color_search_windows(
+    image: np.ndarray,
+    color_key: str,
+    expected_ratio: float,
+    expected_bbox_area: float,
+) -> list[dict[str, Any]]:
+    """Generate local target-color windows inside broad connected regions."""
+
+    hsv = cv2.cvtColor(cv2.GaussianBlur(image, (3, 3), 0), cv2.COLOR_BGR2HSV)
+    mask = target_component_mask(hsv, color_key)
+    image_area = max(1, image.shape[0] * image.shape[1])
+    min_pixels = max(240, int(image_area * 0.0005))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    features: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+
+    for contour in contours:
+        area = int(cv2.contourArea(contour))
+        if area < min_pixels:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        if w * h < expected_bbox_area * 1.8:
+            continue
+        for box in local_windows_for_component(image, mask, x, y, w, h, expected_ratio, expected_bbox_area):
+            key = (box["x"], box["y"], box["width"], box["height"])
+            if key in seen:
+                continue
+            seen.add(key)
+            item = box_features(image, box, 0.72)
+            if item["colorShares"].get(color_key, 0.0) >= 0.22 and item["area"] >= min_pixels:
+                features.append(item)
+
+    return sorted(features, key=lambda item: item["proposalScore"], reverse=True)[:32]
+
+
+def needs_local_window_search(image: np.ndarray, proposals: list[Proposal]) -> bool:
+    if len(proposals) <= 4:
+        return True
+    image_area = max(1, image.shape[0] * image.shape[1])
+    largest = max((proposal.bbox["width"] * proposal.bbox["height"] for proposal in proposals), default=0)
+    return largest / image_area >= 0.34
+
+
+def local_windows_for_component(
+    image: np.ndarray,
+    mask: np.ndarray,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    expected_ratio: float,
+    expected_bbox_area: float,
+) -> list[dict[str, int]]:
+    height, width = image.shape[:2]
+    windows: list[dict[str, int]] = []
+    for multiplier in (1.5, 2.2, 3.1, 4.0):
+        area = max(400.0, expected_bbox_area * multiplier)
+        for ratio in (expected_ratio, max(1.0, expected_ratio * 0.72), min(3.2, expected_ratio * 1.28)):
+            long_side = int(round(np.sqrt(area * ratio)))
+            short_side = int(round(max(12.0, area / max(1, long_side))))
+            for ww, hh in ((long_side, short_side), (short_side, long_side)):
+                if ww > width or hh > height:
+                    continue
+                step_x = max(16, ww // 3)
+                step_y = max(16, hh // 3)
+                x_start = max(0, x - ww // 4)
+                x_end = min(width - ww, x + w - (ww * 3) // 4)
+                y_start = max(0, y - hh // 4)
+                y_end = min(height - hh, y + h - (hh * 3) // 4)
+                if x_end < x_start or y_end < y_start:
+                    continue
+                for yy in range(y_start, y_end + 1, step_y):
+                    for xx in range(x_start, x_end + 1, step_x):
+                        crop = mask[yy : yy + hh, xx : xx + ww]
+                        color_density = np.count_nonzero(crop) / max(1, ww * hh)
+                        if color_density >= 0.18:
+                            windows.append({"x": xx, "y": yy, "width": ww, "height": hh})
+    return windows
 
 
 def box_features(image: np.ndarray, box: dict[str, int], base_score: float) -> dict[str, Any]:
@@ -249,6 +397,25 @@ def local_color_shares(masks: dict[str, np.ndarray]) -> dict[str, float]:
     if total <= 0:
         return {key: 0.0 for key in counts}
     return {key: count / total for key, count in counts.items()}
+
+
+def target_component_mask(hsv: np.ndarray, color_key: str) -> np.ndarray:
+    """Use a stricter mask for target-conditioned box extraction.
+
+    The broad catalog color ranges are useful for scoring, but for proposals a
+    slightly stricter saturated mask keeps red bricks from merging with orange
+    shadows and yellow highlights in cluttered pile photos.
+    """
+
+    if color_key == "red":
+        lower_red = cv2.inRange(hsv, np.array((0, 115, 55)), np.array((8, 255, 255)))
+        upper_red = cv2.inRange(hsv, np.array((174, 115, 55)), np.array((180, 255, 255)))
+        return cv2.bitwise_or(lower_red, upper_red)
+    if color_key == "orange":
+        return cv2.inRange(hsv, np.array((10, 105, 60)), np.array((22, 255, 255)))
+    if color_key == "yellow":
+        return cv2.inRange(hsv, np.array((24, 95, 80)), np.array((37, 255, 255)))
+    return color_mask(hsv, color_key)
 
 
 def clip_box(image: np.ndarray, box: dict[str, int]) -> tuple[int, int, int, int]:
@@ -303,6 +470,99 @@ def ratio_score(observed: float, expected: float) -> float:
     observed = max(1.0, observed)
     score = np.exp(-abs(np.log(observed / expected)) * 1.35)
     return float(max(0.0, min(1.0, score)))
+
+
+def size_floor_score(observed_area: float, expected_area: float) -> float:
+    expected_area = max(1.0, expected_area)
+    observed_area = max(1.0, observed_area)
+    score = observed_area / (expected_area * 0.82)
+    return float(max(0.0, min(1.0, score)))
+
+
+def border_containment_score(image: np.ndarray, box: dict[str, int]) -> float:
+    """Prefer fully visible bricks over clipped edge fragments."""
+
+    height, width = image.shape[:2]
+    x, y, w, h = clip_box(image, box)
+    if w <= 0 or h <= 0:
+        return 0.0
+    touches_left = x <= 1
+    touches_top = y <= 1
+    touches_right = x + w >= width - 1
+    touches_bottom = y + h >= height - 1
+    touches = sum([touches_left, touches_top, touches_right, touches_bottom])
+    if touches >= 2:
+        return 0.58
+    if touches == 1:
+        edge_span = 0.0
+        if touches_left or touches_right:
+            edge_span = max(edge_span, h / max(1, height))
+        if touches_top or touches_bottom:
+            edge_span = max(edge_span, w / max(1, width))
+        return 0.78 if edge_span > 0.22 else 0.88
+    return 1.0
+
+
+def non_max_suppression(
+    detections: list[Detection],
+    iou_threshold: float,
+    overlap_threshold: float,
+) -> list[Detection]:
+    kept: list[Detection] = []
+    for detection in detections:
+        if all(
+            box_iou(detection.bbox, existing.bbox) < iou_threshold
+            and box_overlap_ratio(detection.bbox, existing.bbox) < overlap_threshold
+            and not same_object_cluster(detection.bbox, existing.bbox)
+            for existing in kept
+        ):
+            kept.append(detection)
+    return kept
+
+
+def box_iou(first: dict[str, int], second: dict[str, int]) -> float:
+    ax0, ay0 = first["x"], first["y"]
+    ax1, ay1 = ax0 + first["width"], ay0 + first["height"]
+    bx0, by0 = second["x"], second["y"]
+    bx1, by1 = bx0 + second["width"], by0 + second["height"]
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+    intersection = iw * ih
+    union = first["width"] * first["height"] + second["width"] * second["height"] - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
+def box_overlap_ratio(first: dict[str, int], second: dict[str, int]) -> float:
+    ax0, ay0 = first["x"], first["y"]
+    ax1, ay1 = ax0 + first["width"], ay0 + first["height"]
+    bx0, by0 = second["x"], second["y"]
+    bx1, by1 = bx0 + second["width"], by0 + second["height"]
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+    intersection = iw * ih
+    smaller = min(first["width"] * first["height"], second["width"] * second["height"])
+    if smaller <= 0:
+        return 0.0
+    return intersection / smaller
+
+
+def same_object_cluster(first: dict[str, int], second: dict[str, int]) -> bool:
+    overlap = box_overlap_ratio(first, second)
+    if overlap < 0.25:
+        return False
+    first_cx = first["x"] + first["width"] / 2
+    first_cy = first["y"] + first["height"] / 2
+    second_cx = second["x"] + second["width"] / 2
+    second_cy = second["y"] + second["height"] / 2
+    distance = float(np.hypot(first_cx - second_cx, first_cy - second_cy))
+    first_diag = float(np.hypot(first["width"], first["height"]))
+    second_diag = float(np.hypot(second["width"], second["height"]))
+    reference = max(1.0, (first_diag + second_diag) / 2)
+    return distance / reference < 0.38
 
 
 __all__ = [

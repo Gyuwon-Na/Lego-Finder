@@ -36,7 +36,7 @@ const SAMPLE_SET = {
   ]
 };
 
-const API_BASE = window.BRICKFINDER_API_BASE || (location.port === '8000' ? '' : 'http://localhost:8000');
+const API_BASE = window.BRICKFINDER_API_BASE || (location.port === '8000' ? '' : `${location.protocol}//${location.hostname}:8000`);
 
 const state = {
   currentTarget: null,
@@ -48,6 +48,9 @@ const state = {
   fpsSamples: [],
   lastDetections: [],
   manualImageData: null,
+  evalImageFile: null,
+  evalImageBitmap: null,
+  evalImageNaturalSize: null,
   analyzingFrame: false,
   processEveryNFrames: 2,
   frameCounter: 0
@@ -56,7 +59,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 const dom = {
-  screens: ['homeScreen', 'arScreen', 'detailScreen', 'setScreen', 'architectureScreen'].map($),
+  screens: ['homeScreen', 'imageEvalScreen', 'arScreen', 'detailScreen', 'setScreen', 'architectureScreen'].map($),
   textQuery: $('textQuery'),
   startTextSearch: $('startTextSearch'),
   demoButton: $('demoButton'),
@@ -71,6 +74,19 @@ const dom = {
   analyzeManualImage: $('analyzeManualImage'),
   manualPreview: $('manualPreview'),
   manualPlaceholder: $('manualPlaceholder'),
+  imageEvalQuery: $('imageEvalQuery'),
+  imageEvalInput: $('imageEvalInput'),
+  pickImageEval: $('pickImageEval'),
+  runImageEval: $('runImageEval'),
+  imageEvalCanvas: $('imageEvalCanvas'),
+  imageEvalPlaceholder: $('imageEvalPlaceholder'),
+  imageEvalFileName: $('imageEvalFileName'),
+  imageEvalStatus: $('imageEvalStatus'),
+  imageEvalSummary: $('imageEvalSummary'),
+  imageEvalProposalCount: $('imageEvalProposalCount'),
+  imageEvalDetectionCount: $('imageEvalDetectionCount'),
+  imageEvalTopScore: $('imageEvalTopScore'),
+  imageEvalDetections: $('imageEvalDetections'),
   cameraVideo: $('cameraVideo'),
   overlayCanvas: $('overlayCanvas'),
   workCanvas: $('workCanvas'),
@@ -154,6 +170,15 @@ function parseQuery(text, source = 'text') {
 function showScreen(id) {
   dom.screens.forEach((screen) => screen.classList.toggle('active', screen.id === id));
   if (id !== 'arScreen') stopCamera();
+}
+
+function openImageEvalScreen() {
+  dom.imageEvalQuery.value = dom.textQuery.value || dom.imageEvalQuery.value;
+  showScreen('imageEvalScreen');
+  drawEvalBaseImage();
+  if (location.hash !== '#image-eval') {
+    history.replaceState(null, '', '#image-eval');
+  }
 }
 
 function setPipeline(activeStep) {
@@ -607,6 +632,129 @@ function showDetail(target = state.currentTarget) {
   showScreen('detailScreen');
 }
 
+async function loadEvalImage(file) {
+  state.evalImageFile = file;
+  state.evalImageBitmap = await createImageBitmap(file);
+  state.evalImageNaturalSize = { width: state.evalImageBitmap.width, height: state.evalImageBitmap.height };
+  dom.imageEvalFileName.textContent = file.name;
+  dom.runImageEval.disabled = false;
+  dom.imageEvalStatus.textContent = '이미지가 준비되었습니다. 프롬프트를 입력하고 이미지 검색을 실행하세요.';
+  dom.imageEvalPlaceholder.style.display = 'none';
+  dom.imageEvalSummary.textContent = '검색 대기 중';
+  dom.imageEvalProposalCount.textContent = '0';
+  dom.imageEvalDetectionCount.textContent = '0';
+  dom.imageEvalTopScore.textContent = '0%';
+  dom.imageEvalDetections.innerHTML = '';
+  drawEvalBaseImage();
+}
+
+function drawEvalBaseImage() {
+  const canvas = dom.imageEvalCanvas;
+  const ctx = canvas.getContext('2d');
+  const bitmap = state.evalImageBitmap;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#050817';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (!bitmap) return null;
+
+  const scale = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height);
+  const drawW = bitmap.width * scale;
+  const drawH = bitmap.height * scale;
+  const offsetX = (canvas.width - drawW) / 2;
+  const offsetY = (canvas.height - drawH) / 2;
+  ctx.drawImage(bitmap, offsetX, offsetY, drawW, drawH);
+  return { scale, offsetX, offsetY, drawW, drawH };
+}
+
+async function runImageEvaluation() {
+  if (!state.evalImageFile) return;
+  const query = dom.imageEvalQuery.value.trim() || dom.textQuery.value.trim() || '2x4 red brick';
+  dom.runImageEval.disabled = true;
+  dom.runImageEval.textContent = '검색 중...';
+  dom.imageEvalStatus.textContent = `${API_BASE}/api/search/image 호출 중`;
+  dom.imageEvalDetections.innerHTML = '';
+
+  const form = new FormData();
+  form.append('text', query);
+  form.append('file', state.evalImageFile);
+  form.append('max_results', '1');
+
+  try {
+    const res = await fetch(`${API_BASE}/api/search/image`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!res.ok) throw new Error(`Backend returned ${res.status}`);
+    const result = await res.json();
+    renderImageEvaluationResult(result);
+    dom.imageEvalStatus.textContent = '검색 완료';
+  } catch (error) {
+    console.error(error);
+    drawEvalBaseImage();
+    dom.imageEvalSummary.textContent = '검색 실패';
+    dom.imageEvalStatus.textContent = `백엔드 연결 또는 이미지 처리 실패: ${error.message}`;
+  } finally {
+    dom.runImageEval.disabled = false;
+    dom.runImageEval.textContent = '이미지 검색';
+  }
+}
+
+function renderImageEvaluationResult(result) {
+  const target = result.target || parseQuery(dom.imageEvalQuery.value, 'image-eval');
+  const detections = result.detections || [];
+  const proposals = result.proposals?.count || 0;
+  const transform = drawEvalBaseImage();
+  const canvas = dom.imageEvalCanvas;
+  const ctx = canvas.getContext('2d');
+
+  if (transform) {
+    detections.forEach((det, index) => {
+      const color = target.colorCss || COLORS[target.colorKey]?.css || '#E94560';
+      const box = det.bbox;
+      const x = transform.offsetX + box.x * transform.scale;
+      const y = transform.offsetY + box.y * transform.scale;
+      const w = box.width * transform.scale;
+      const h = box.height * transform.scale;
+      const pad = Math.max(5, Math.min(w, h) * 0.08);
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = index === 0 ? 22 : 10;
+      ctx.lineWidth = index === 0 ? 5 : 3;
+      ctx.strokeStyle = color;
+      roundRect(ctx, x - pad, y - pad, w + pad * 2, h + pad * 2, 12);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(5, 8, 23, 0.82)';
+      roundRect(ctx, x - pad, Math.max(8, y - pad - 34), 148, 28, 9);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '700 14px system-ui, sans-serif';
+      ctx.fillText(`${index + 1}. ${Math.round((det.score || 0) * 100)}%`, x - pad + 10, Math.max(27, y - pad - 15));
+      ctx.restore();
+    });
+  }
+
+  dom.imageEvalProposalCount.textContent = String(proposals);
+  dom.imageEvalDetectionCount.textContent = String(detections.length);
+  dom.imageEvalTopScore.textContent = detections.length ? `${Math.round(detections[0].score * 100)}%` : '0%';
+  dom.imageEvalSummary.textContent = detections.length
+    ? `${target.name || dom.imageEvalQuery.value} 후보 ${detections.length}개`
+    : '후보를 찾지 못했습니다';
+
+  dom.imageEvalDetections.innerHTML = '';
+  detections.forEach((det) => {
+    const item = document.createElement('div');
+    item.className = 'detection-row';
+    item.innerHTML = `
+      <strong>#${det.rank} · ${(det.score * 100).toFixed(1)}%</strong>
+      <span>bbox ${det.bbox.x}, ${det.bbox.y}, ${det.bbox.width}×${det.bbox.height}</span>
+      <small>색상 ${(det.colorDominance * 100).toFixed(0)}% · 형상 ${(det.shapeScore * 100).toFixed(0)}% · 제안 ${(det.proposalScore * 100).toFixed(0)}%</small>
+    `;
+    dom.imageEvalDetections.appendChild(item);
+  });
+}
+
 async function analyzeManualImage(file) {
   const image = await createImageBitmap(file);
   const canvas = dom.manualPreview;
@@ -758,8 +906,10 @@ function snapshot() {
 
 function wireEvents() {
   $('goHome').addEventListener('click', () => showScreen('homeScreen'));
+  $('openImageEval').addEventListener('click', openImageEvalScreen);
   $('openSetScreen').addEventListener('click', () => showScreen('setScreen'));
   $('openArchitecture').addEventListener('click', () => showScreen('architectureScreen'));
+  $('backFromImageEval').addEventListener('click', () => showScreen('homeScreen'));
   $('backFromAr').addEventListener('click', () => showScreen('homeScreen'));
   $('backFromDetail').addEventListener('click', () => showScreen(state.lastScreen || 'homeScreen'));
   $('backFromSet').addEventListener('click', () => showScreen('homeScreen'));
@@ -774,6 +924,15 @@ function wireEvents() {
     const target = makeTarget({ colorKey: 'blue', width: 1, length: 4, category: 'brick', source: 'demo' });
     dom.textQuery.value = '파란색 1x4 기본 브릭';
     startSearch(target);
+  });
+  dom.pickImageEval.addEventListener('click', () => dom.imageEvalInput.click());
+  dom.imageEvalInput.addEventListener('change', async (event) => {
+    const [file] = event.target.files || [];
+    if (file) await loadEvalImage(file);
+  });
+  dom.runImageEval.addEventListener('click', runImageEvaluation);
+  dom.imageEvalQuery.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && state.evalImageFile) runImageEvaluation();
   });
   dom.pickManualImage.addEventListener('click', () => dom.manualImageInput.click());
   dom.manualImageInput.addEventListener('change', async (event) => {
@@ -792,6 +951,9 @@ function wireEvents() {
   dom.snapshotButton.addEventListener('click', snapshot);
   $('loadSetButton').addEventListener('click', loadSet);
   window.addEventListener('resize', resizeOverlay);
+  window.addEventListener('hashchange', () => {
+    if (location.hash === '#image-eval') openImageEvalScreen();
+  });
 }
 
 function init() {
@@ -802,6 +964,7 @@ function init() {
   state.currentTarget = initialTarget;
   updateTargetUI(initialTarget);
   renderSetParts(SAMPLE_SET);
+  if (location.hash === '#image-eval') openImageEvalScreen();
 }
 
 init();

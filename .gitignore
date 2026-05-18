@@ -149,6 +149,7 @@ venv.bak/
 data/demo/
 data/search_results/
 data/synthetic/
+data/synthetic_lego/
 data/rebrickable/images/
 
 # Spyder project settings

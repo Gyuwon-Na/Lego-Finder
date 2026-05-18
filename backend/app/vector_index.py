@@ -18,6 +18,9 @@ from .catalog import COLORS, COMMON_PARTS, PartTarget
 
 
 CATEGORY_ORDER = ["brick", "plate", "tile"]
+HEIGHT_ORDER = ["standard", "thin", "tile", "tall"]
+SHAPE_ORDER = ["rectangular", "slope", "round", "corner"]
+EMBEDDING_DIM = len(COLORS) + len(CATEGORY_ORDER) + len(HEIGHT_ORDER) + len(SHAPE_ORDER) + 8
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,8 @@ class PartVectorIndex:
                 vector = record.get("vector")
                 if not payload or not vector:
                     continue
+                if len(vector) != EMBEDDING_DIM:
+                    return None
                 payloads.append(payload)
                 vectors.append(np.array(vector, dtype=np.float32))
             if not vectors:
@@ -102,6 +107,12 @@ def text_part_embedding(part: PartTarget) -> np.ndarray:
     color = one_hot(color_keys.index(part.colorKey), len(color_keys))
     category_index = CATEGORY_ORDER.index(part.category) if part.category in CATEGORY_ORDER else 0
     category = one_hot(category_index, len(CATEGORY_ORDER))
+    height_index = HEIGHT_ORDER.index(part.height) if part.height in HEIGHT_ORDER else 0
+    height = one_hot(height_index, len(HEIGHT_ORDER))
+    shape_index = SHAPE_ORDER.index(part.shape) if part.shape in SHAPE_ORDER else 0
+    shape = one_hot(shape_index, len(SHAPE_ORDER))
+    attribute_count = min(len(part.attributes), 4) / 4.0
+    negative_count = min(len(part.negativeTerms), 4) / 4.0
     dims = np.array(
         [
             part.width / 8.0,
@@ -110,10 +121,12 @@ def text_part_embedding(part: PartTarget) -> np.ndarray:
             max(part.width, part.length) / 8.0,
             max(part.width, part.length) / max(1, min(part.width, part.length)) / 4.0,
             1.0,
+            attribute_count,
+            negative_count,
         ],
         dtype=np.float32,
     )
-    vector = np.concatenate([color * 1.8, category * 1.2, dims])
+    vector = np.concatenate([color * 1.8, category * 1.2, height * 0.75, shape * 0.55, dims])
     return normalize(vector)
 
 
@@ -127,6 +140,10 @@ def proposal_embedding(
     color_index = color_keys.index(dominant_color_key) if dominant_color_key in color_keys else 0
     color = one_hot(color_index, len(color_keys))
     category = one_hot(CATEGORY_ORDER.index(target.category), len(CATEGORY_ORDER))
+    height_index = HEIGHT_ORDER.index(target.height) if target.height in HEIGHT_ORDER else 0
+    height = one_hot(height_index, len(HEIGHT_ORDER))
+    shape_index = SHAPE_ORDER.index(target.shape) if target.shape in SHAPE_ORDER else 0
+    shape = one_hot(shape_index, len(SHAPE_ORDER))
     expected_long = max(target.width, target.length)
     expected_short = min(target.width, target.length)
     dims = np.array(
@@ -137,10 +154,12 @@ def proposal_embedding(
             expected_long / 8.0,
             aspect_ratio / 4.0,
             fill_ratio,
+            min(len(target.attributes), 4) / 4.0,
+            0.0,
         ],
         dtype=np.float32,
     )
-    vector = np.concatenate([color * 1.8, category * 0.75, dims])
+    vector = np.concatenate([color * 1.8, category * 0.75, height * 0.55, shape * 0.4, dims])
     return normalize(vector)
 
 

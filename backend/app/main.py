@@ -1,13 +1,57 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+try:
+    import httpx
+except ModuleNotFoundError:  # pragma: no cover - optional in unit-test environments
+    httpx = None  # type: ignore[assignment]
+try:
+    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
+    from pydantic import BaseModel, Field
+except ModuleNotFoundError:  # pragma: no cover - lets pure helpers import without API deps
+    class HTTPException(Exception):
+        def __init__(self, status_code: int, detail: str):
+            super().__init__(detail)
+            self.status_code = status_code
+            self.detail = detail
+
+    class JSONResponse(dict):
+        pass
+
+    class UploadFile:
+        content_type: Optional[str] = None
+
+    class BaseModel:
+        pass
+
+    class CORSMiddleware:
+        pass
+
+    def Field(default: Any, **_: Any) -> Any:
+        return default
+
+    def File(default: Any = None, **_: Any) -> Any:
+        return default
+
+    def Form(default: Any = None, **_: Any) -> Any:
+        return default
+
+    class FastAPI:
+        def __init__(self, *_: Any, **__: Any):
+            pass
+
+        def add_middleware(self, *_: Any, **__: Any) -> None:
+            return None
+
+        def get(self, *_: Any, **__: Any) -> Any:
+            return lambda func: func
+
+        def post(self, *_: Any, **__: Any) -> Any:
+            return lambda func: func
 
 from .catalog import COMMON_PARTS, COLORS, SAMPLE_SET, make_target
 from .query_parser import parse_query
@@ -33,25 +77,25 @@ class TextQuery(BaseModel):
 
 
 class MatchResponse(BaseModel):
-    target: dict[str, Any]
-    candidates: list[dict[str, Any]]
-    pipeline: dict[str, Any]
+    target: Dict[str, Any]
+    candidates: List[Dict[str, Any]]
+    pipeline: Dict[str, Any]
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
+def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post("/api/query/text", response_model=MatchResponse)
-def query_text(payload: TextQuery) -> dict[str, Any]:
+def query_text(payload: TextQuery) -> Dict[str, Any]:
     target = parse_query(payload.text)
-    candidates = rank_candidates(target.colorKey, target.width, target.length, target.category)
+    candidates = rank_candidates(target.colorKey, target.width, target.length, target.category, target=target)
     return {
         "target": target.to_dict(),
         "candidates": candidates,
         "pipeline": {
-            "query_encoder": "deterministic parser now; replaceable with MobileCLIP/CLIP text encoder",
+            "query_encoder": "structured deterministic parser with CLIP-ready target spec",
             "vector_index": "offline mock; replace with hnswlib or Qdrant",
             "vision": "browser HSV ROI now; replace with ONNX/MediaPipe detector",
         },
@@ -77,7 +121,7 @@ async def search_image(
     text: str = Form(..., examples=["2x4 red brick"]),
     file: UploadFile = File(...),
     max_results: int = Form(8),
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="image file required")
     try:
@@ -87,7 +131,7 @@ async def search_image(
 
 
 @app.get("/api/parts/search")
-def search_parts(q: str = "") -> dict[str, Any]:
+def search_parts(q: str = "") -> Dict[str, Any]:
     q_lower = q.lower().strip()
     results = []
     for part in COMMON_PARTS:
@@ -98,10 +142,12 @@ def search_parts(q: str = "") -> dict[str, Any]:
 
 
 @app.get("/api/rebrickable/set/{set_num}")
-async def rebrickable_set(set_num: str, api_key: str | None = None) -> dict[str, Any]:
+async def rebrickable_set(set_num: str, api_key: Optional[str] = None) -> Dict[str, Any]:
     key = api_key or os.getenv("REBRICKABLE_API_KEY")
     if not key:
         return {**SAMPLE_SET, "set_num": set_num, "name": f"{set_num} 샘플/오프라인 모드"}
+    if httpx is None:
+        raise HTTPException(status_code=503, detail="httpx is required for Rebrickable API proxy")
 
     headers = {"Authorization": f"key {key}"}
     base = f"https://rebrickable.com/api/v3/lego/sets/{set_num}/parts/"
@@ -125,8 +171,17 @@ async def rebrickable_set(set_num: str, api_key: str | None = None) -> dict[str,
     }
 
 
-def rank_candidates(color_key: str, width: int, length: int, category: str) -> list[dict[str, Any]]:
+def rank_candidates(
+    color_key: str,
+    width: int,
+    length: int,
+    category: str,
+    target: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
     requested_dims = sorted((width, length))
+    negative_terms = set(getattr(target, "negativeTerms", []) or [])
+    target_height = getattr(target, "height", "standard")
+    target_shape = getattr(target, "shape", "rectangular")
 
     def score(part: Any) -> float:
         part_dims = sorted((part.width, part.length))
@@ -135,13 +190,17 @@ def rank_candidates(color_key: str, width: int, length: int, category: str) -> l
         value += 0.42 if part.colorKey == color_key else 0.0
         value += 0.24 if part.category == category else 0.0
         value += 0.34 * dimension_score
+        value += 0.06 if getattr(part, "height", "standard") == target_height else 0.0
+        value += 0.04 if getattr(part, "shape", "rectangular") == target_shape else 0.0
+        if part.colorKey in negative_terms or part.category in negative_terms:
+            value *= 0.18
         return value
 
     ranked = sorted(COMMON_PARTS, key=score, reverse=True)
     return [{**part.to_dict(), "score": round(score(part), 3)} for part in ranked[:8]]
 
 
-def normalize_rebrickable_part(item: dict[str, Any]) -> dict[str, Any]:
+def normalize_rebrickable_part(item: Dict[str, Any]) -> Dict[str, Any]:
     part_info = item.get("part") or {}
     color_info = item.get("color") or {}
     name = f"{part_info.get('name', '')} {color_info.get('name', '')}"
@@ -196,7 +255,7 @@ def infer_category(value: str) -> str:
     return "brick"
 
 
-def infer_dimensions(value: str) -> tuple[int, int]:
+def infer_dimensions(value: str) -> Tuple[int, int]:
     import re
 
     match = re.search(r"(\d+)\s*x\s*(\d+)", value or "", re.I)

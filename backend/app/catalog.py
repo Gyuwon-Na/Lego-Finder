@@ -7,7 +7,7 @@ usable without an API key.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any
 
 
@@ -54,6 +54,11 @@ class PartTarget:
     partNum: str
     quantity: int = 1
     source: str = "server"
+    height: str = "standard"
+    shape: str = "rectangular"
+    attributes: list[str] = field(default_factory=list)
+    negativeTerms: list[str] = field(default_factory=list)
+    confidence: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +71,11 @@ def make_target(
     category: str = "brick",
     quantity: int = 1,
     source: str = "server",
+    height: str = "standard",
+    shape: str = "rectangular",
+    attributes: list[str] | None = None,
+    negative_terms: list[str] | None = None,
+    confidence: dict[str, float] | None = None,
 ) -> PartTarget:
     color = COLORS.get(color_key, COLORS["red"])
     category = category if category in CATEGORY_LABELS else "brick"
@@ -88,6 +98,11 @@ def make_target(
         partNum=part_num,
         quantity=quantity,
         source=source,
+        height=height,
+        shape=shape,
+        attributes=attributes or [],
+        negativeTerms=negative_terms or [],
+        confidence=confidence or {},
     )
 
 

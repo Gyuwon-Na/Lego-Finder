@@ -18,6 +18,7 @@
           </span>
         </button>
         <div class="header-actions">
+          <button class="ghost-button" id="openImageEval" type="button">이미지 평가</button>
           <button class="ghost-button" id="openArchitecture">파이프라인</button>
           <button class="ghost-button" id="openSetScreen">세트 연동</button>
         </div>
@@ -71,6 +72,53 @@
                 </div>
                 <button class="mini-button" id="targetDetailButton">상세</button>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="imageEvalScreen" aria-labelledby="imageEvalTitle">
+          <div class="image-eval-layout">
+            <div class="glass-card image-eval-card">
+              <button class="ghost-button" id="backFromImageEval">← 홈으로</button>
+              <p class="eyebrow">offline accuracy check</p>
+              <h2 id="imageEvalTitle">정지 이미지에서 블록 찾기</h2>
+              <p class="subcopy">레고 더미 사진을 올리고 찾을 블록을 입력하면 백엔드 검색 결과를 박스로 표시합니다.</p>
+
+              <label class="input-label" for="imageEvalQuery">찾을 블록</label>
+              <div class="query-input-row">
+                <input id="imageEvalQuery" type="text" value="2x4 red brick" autocomplete="off" />
+                <button class="primary-button" id="runImageEval" disabled>이미지 검색</button>
+              </div>
+
+              <input id="imageEvalInput" type="file" accept="image/*" hidden />
+              <div class="row gap wrap">
+                <button class="secondary-button" id="pickImageEval">레고 더미 이미지 선택</button>
+                <span class="fine-print" id="imageEvalFileName">선택된 이미지 없음</span>
+              </div>
+              <p class="fine-print" id="imageEvalStatus">백엔드가 켜져 있어야 합니다: /api/search/image</p>
+            </div>
+
+            <div class="glass-card image-result-card">
+              <div class="image-result-stage">
+                <canvas id="imageEvalCanvas" width="960" height="640" aria-label="이미지 검색 결과"></canvas>
+                <div class="placeholder-copy" id="imageEvalPlaceholder">
+                  <span>▣</span>
+                  <strong>이미지를 선택하면 결과가 여기에 표시됩니다</strong>
+                  <small>상위 후보 bbox, confidence, 색상 지배도, 형상 점수를 함께 확인할 수 있습니다.</small>
+                </div>
+              </div>
+              <div class="image-result-summary">
+                <div>
+                  <div class="section-title">검색 결과</div>
+                  <strong id="imageEvalSummary">아직 실행하지 않음</strong>
+                </div>
+                <div class="metrics-grid compact">
+                  <div><small>proposals</small><strong id="imageEvalProposalCount">0</strong></div>
+                  <div><small>detections</small><strong id="imageEvalDetectionCount">0</strong></div>
+                  <div><small>top score</small><strong id="imageEvalTopScore">0%</strong></div>
+                </div>
+              </div>
+              <div class="image-detection-list" id="imageEvalDetections"></div>
             </div>
           </div>
         </section>
