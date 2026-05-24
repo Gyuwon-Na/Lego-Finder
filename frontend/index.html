@@ -18,7 +18,7 @@
           </span>
         </button>
         <div class="header-actions">
-          <button class="ghost-button" id="openImageEval" type="button">이미지 평가</button>
+          <button class="ghost-button" id="openImageEval" type="button">사진 테스트</button>
           <button class="ghost-button" id="openArchitecture">파이프라인</button>
           <button class="ghost-button" id="openSetScreen">세트 연동</button>
         </div>
@@ -33,25 +33,25 @@
                 <canvas id="manualPreview" width="480" height="300" aria-label="설명서 이미지 미리보기"></canvas>
                 <div class="placeholder-copy" id="manualPlaceholder">
                   <span>📷</span>
-                  <strong>설명서 부품 도면 촬영/업로드</strong>
-                  <small>이미지에서 주조색을 추정해 쿼리로 변환합니다.</small>
+                  <strong>실시간 카메라 탐지</strong>
+                  <small>휴대폰 카메라로 레고 더미를 비추면 색상 ROI 후보를 바로 표시합니다.</small>
                 </div>
               </div>
               <div class="row gap">
-                <button class="primary-button" id="pickManualImage">설명서 이미지 선택</button>
-                <button class="secondary-button" id="analyzeManualImage" disabled>이미지 쿼리 분석</button>
+                <button class="primary-button" id="analyzeManualImage">카메라 바로 시작</button>
+                <button class="secondary-button" id="pickManualImage">사진으로 타깃 만들기</button>
               </div>
             </div>
 
             <div class="query-panel glass-card">
-              <p class="eyebrow">P0 MVP query</p>
-              <h1 id="homeTitle">찾고 싶은 레고 부품을 입력하세요</h1>
-              <p class="subcopy">예: “빨간색 2x3 기본 브릭”, “blue 1x4 plate”, “노란 2x2 타일”</p>
+              <p class="eyebrow">live camera search</p>
+              <h1 id="homeTitle">카메라로 바로 레고 부품을 찾습니다</h1>
+              <p class="subcopy">기본 타깃으로 카메라가 바로 열립니다. 바꾸고 싶으면 아래에 “빨간색 2x3 기본 브릭”, “blue 1x4 plate”처럼 입력하세요.</p>
 
               <label class="input-label" for="textQuery">자연어/텍스트 쿼리</label>
               <div class="query-input-row">
                 <input id="textQuery" type="text" value="빨간색 2x3 기본 브릭" autocomplete="off" />
-                <button class="primary-button" id="startTextSearch">탐색 시작</button>
+                <button class="primary-button" id="startTextSearch">카메라 탐지 시작</button>
               </div>
 
               <div class="row gap wrap">

@@ -939,9 +939,7 @@ function wireEvents() {
     const [file] = event.target.files || [];
     if (file) await analyzeManualImage(file);
   });
-  dom.analyzeManualImage.addEventListener('click', () => {
-    if (state.currentTarget) startSearch(state.currentTarget);
-  });
+  dom.analyzeManualImage.addEventListener('click', () => startSearch(parseQuery(dom.textQuery.value, 'live-camera')));
   dom.pinButton.addEventListener('click', () => {
     state.pinned = !state.pinned;
     dom.pinButton.textContent = state.pinned ? '📌 핀 해제' : '📌 핀 고정';
@@ -964,7 +962,11 @@ function init() {
   state.currentTarget = initialTarget;
   updateTargetUI(initialTarget);
   renderSetParts(SAMPLE_SET);
-  if (location.hash === '#image-eval') openImageEvalScreen();
+  if (location.hash === '#image-eval') {
+    openImageEvalScreen();
+  } else {
+    startSearch(initialTarget);
+  }
 }
 
 init();

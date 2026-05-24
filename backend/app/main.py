@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -11,8 +12,11 @@ try:
     from fastapi import FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
+    from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
 except ModuleNotFoundError:  # pragma: no cover - lets pure helpers import without API deps
+    StaticFiles = None  # type: ignore[assignment]
+
     class HTTPException(Exception):
         def __init__(self, status_code: int, detail: str):
             super().__init__(detail)
@@ -262,3 +266,12 @@ def infer_dimensions(value: str) -> Tuple[int, int]:
     if not match:
         return (2, 3)
     return int(match.group(1)), int(match.group(2))
+
+
+def mount_frontend() -> None:
+    frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
+    if StaticFiles is not None and frontend_dir.exists() and hasattr(app, "mount"):
+        app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+
+
+mount_frontend()
