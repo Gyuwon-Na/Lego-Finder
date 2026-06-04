@@ -34,9 +34,10 @@ PART_NUMBERS = {
     "plate-1x4": "3710",
     "tile-2x2": "3068",
     "tile-1x2": "3069",
+    "head-1x1": "3626",
 }
 
-CATEGORY_LABELS = {"brick": "기본 브릭", "plate": "플레이트", "tile": "타일"}
+CATEGORY_LABELS = {"brick": "기본 브릭", "plate": "플레이트", "tile": "타일", "head": "미니피겨 헤드"}
 
 
 @dataclass(frozen=True)
@@ -83,7 +84,10 @@ def make_target(
     alt_key = f"{category}-{length}x{width}"
     part_num = PART_NUMBERS.get(key) or PART_NUMBERS.get(alt_key) or "unknown"
     category_label = CATEGORY_LABELS[category]
-    name = f"{color['label']} {width}x{length} {category_label}"
+    if category == "head":
+        name = f"{color['label']} 사람 얼굴 {category_label}" if "face_print" in (attributes or []) else f"{color['label']} {category_label}"
+    else:
+        name = f"{color['label']} {width}x{length} {category_label}"
     return PartTarget(
         id=f"{color_key}-{category}-{width}x{length}",
         name=name,
@@ -113,6 +117,7 @@ COMMON_PARTS: list[PartTarget] = [
         "brick": [(2, 4), (2, 3), (2, 2), (1, 4), (1, 2)],
         "plate": [(1, 2), (2, 2), (1, 4)],
         "tile": [(2, 2), (1, 2)],
+        "head": [(1, 1)],
     }.items()
     for width, length in dims
 ]

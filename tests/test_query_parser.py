@@ -37,3 +37,15 @@ def test_parse_shape_and_attribute_terms():
     assert target.length == 2
     assert target.shape == "slope"
     assert "transparent" in target.attributes
+
+
+def test_parse_korean_face_head_does_not_default_to_2x3_brick():
+    target = parse_query("노란색 사람 얼굴 모양 브릭")
+    assert target.colorKey == "yellow"
+    assert target.width == 1
+    assert target.length == 1
+    assert target.category == "head"
+    assert target.categoryLabel == "미니피겨 헤드"
+    assert target.shape == "round"
+    assert "face_print" in target.attributes
+    assert "2x3" not in target.name

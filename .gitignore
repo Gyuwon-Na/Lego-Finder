@@ -151,6 +151,7 @@ data/demo/
 data/search_results/
 data/synthetic/
 data/synthetic_lego/
+data/external_eval/
 data/rebrickable/images/
 
 # Spyder project settings

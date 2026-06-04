@@ -33,6 +33,7 @@ class Proposal:
     dominantColorKey: str
     colorShares: dict[str, float]
     proposalScore: float
+    maskPolygon: list[list[int]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -89,6 +90,7 @@ class OpenCVCandidateProposalModel:
                     dominantColorKey=dominant,
                     colorShares={key: round(float(value), 3) for key, value in shares.items()},
                     proposalScore=round(float(proposal_score), 4),
+                    maskPolygon=contour_polygon(contour, scale=scale),
                 )
             )
 
@@ -158,9 +160,11 @@ class YoloSegCandidateProposalModel:
                 mask = cv2.resize(mask_data[index].astype(np.float32), (resized.shape[1], resized.shape[0])) > 0.5
                 mask_crop = mask[y0:y1, x0:x1]
                 area = int(np.count_nonzero(mask_crop))
+                mask_polygon = mask_polygon_from_binary(mask, scale=scale)
             else:
                 mask_crop = np.ones((h, w), dtype=bool)
                 area = w * h
+                mask_polygon = rect_polygon(x0, y0, w, h, scale)
             if area < 80:
                 continue
             bbox_area = max(1, w * h)
@@ -188,6 +192,7 @@ class YoloSegCandidateProposalModel:
                     dominantColorKey=dominant,
                     colorShares={key: round(float(value), 3) for key, value in shares.items()},
                     proposalScore=round(float(proposal_score), 4),
+                    maskPolygon=mask_polygon,
                 )
             )
 
@@ -282,3 +287,38 @@ def masked_color_shares(
     if total <= 0:
         return {key: 0.0 for key in counts}
     return {key: count / total for key, count in counts.items()}
+
+
+def contour_polygon(
+    contour: np.ndarray,
+    scale: float = 1.0,
+    offset: tuple[int, int] = (0, 0),
+    epsilon_ratio: float = 0.018,
+) -> list[list[int]]:
+    if contour.size == 0:
+        return []
+    epsilon = max(1.5, cv2.arcLength(contour, True) * epsilon_ratio)
+    approx = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
+    ox, oy = offset
+    if len(approx) < 3:
+        x, y, w, h = cv2.boundingRect(contour)
+        return rect_polygon(x + ox, y + oy, w, h, scale)
+    return [[int(round((x + ox) / scale)), int(round((y + oy) / scale))] for x, y in approx]
+
+
+def mask_polygon_from_binary(mask: np.ndarray, scale: float = 1.0) -> list[list[int]]:
+    binary = (mask.astype(np.uint8) * 255) if mask.dtype == bool else mask.astype(np.uint8)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return []
+    largest = max(contours, key=cv2.contourArea)
+    return contour_polygon(largest, scale=scale)
+
+
+def rect_polygon(x: int, y: int, w: int, h: int, scale: float = 1.0) -> list[list[int]]:
+    return [
+        [int(round(x / scale)), int(round(y / scale))],
+        [int(round((x + w) / scale)), int(round(y / scale))],
+        [int(round((x + w) / scale)), int(round((y + h) / scale))],
+        [int(round(x / scale)), int(round((y + h) / scale))],
+    ]

@@ -69,6 +69,20 @@ python3 scripts/generate_synthetic_dataset.py --count 50 --out data/synthetic
 
 `build_vector_index.py`는 모델 가중치 없이 파이프라인 테스트용 pseudo-vector를 생성합니다. `hnswlib`와 `numpy`가 설치되어 있으면 HNSW 바이너리도 함께 생성합니다.
 
+## YOLO 세그멘테이션 연결
+
+실시간 AR은 기본적으로 브라우저 휴리스틱으로 동작하지만, `BRICKFINDER_YOLO_MODEL`에 Ultralytics segmentation 체크포인트를 지정하면 백엔드가 레고 조각 mask를 반환하고 프론트는 bbox 대신 mask 윤곽선을 따라 AR glow를 표시합니다.
+
+```bash
+python3 scripts/generate_synthetic_dataset.py --count 500 --out data/synthetic_lego
+.venv/bin/python -m pip install -r backend/requirements-optional.txt
+yolo segment train model=yolo11n-seg.pt data=data/synthetic_lego/dataset.yaml imgsz=640 epochs=80
+export BRICKFINDER_YOLO_MODEL="runs/segment/train/weights/best.pt"
+scripts/run_public.sh
+```
+
+모델이 없으면 기존 OpenCV 후보 생성으로 자동 fallback됩니다. 실시간 프레임 API는 `/api/search/live-frame`이며, 응답의 `detections[].maskPolygon`이 있으면 프론트 AR에서 polygon outline을 우선 사용합니다.
+
 ## 실제 이미지 + 프롬프트 탐색 확인
 
 프론트 화면과 별개로, 레고 더미 사진 파일을 넣고 텍스트 프롬프트로 탐색할 수 있는 CLI를 제공합니다.

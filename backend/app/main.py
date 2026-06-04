@@ -134,6 +134,21 @@ async def search_image(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/search/live-frame")
+async def search_live_frame(
+    text: str = Form(..., examples=["2x4 red brick"]),
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="image file required")
+    try:
+        result = search_image_bytes(await file.read(), text, max_results=1)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result["mode"] = "live-frame"
+    return result
+
+
 @app.get("/api/parts/search")
 def search_parts(q: str = "") -> Dict[str, Any]:
     q_lower = q.lower().strip()

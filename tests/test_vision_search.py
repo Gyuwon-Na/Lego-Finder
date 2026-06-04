@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 
@@ -40,3 +42,21 @@ def test_dimension_parser_accepts_reversed_orientation_in_catalog_rank():
 
     ranked = rank_candidates("red", 4, 2, "brick")
     assert ranked[0]["partNum"] == "3001"
+
+
+def test_green_2x4_on_same_color_baseplate_prefers_foreground_piece():
+    image_path = Path("bricks.jpg")
+    result = search_image_bytes(image_path.read_bytes(), "green 2x4 brick")
+
+    assert result["detections"]
+    top = result["detections"][0]
+    image_area = result["image"]["width"] * result["image"]["height"]
+    box = top["bbox"]
+    center_x = box["x"] + box["width"] / 2
+    center_y = box["y"] + box["height"] / 2
+
+    assert 350 <= center_x <= 540
+    assert 180 <= center_y <= 410
+    assert box["width"] * box["height"] < image_area * 0.10
+    assert top["backgroundSeparation"] > 0.30
+    assert len(top["maskPolygon"]) >= 4

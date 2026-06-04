@@ -41,12 +41,19 @@ def draw_detection(image: np.ndarray, detection: dict, color: tuple[int, int, in
     y = box["y"]
     w = box["width"]
     h = box["height"]
+    polygon = np.array(detection.get("maskPolygon") or [], dtype=np.int32)
     if glow:
         for thickness, alpha in [(22, 0.10), (14, 0.15), (8, 0.22)]:
             layer = image.copy()
-            cv2.rectangle(layer, (x, y), (x + w, y + h), color, thickness)
+            if len(polygon) >= 3:
+                cv2.polylines(layer, [polygon], True, color, thickness, cv2.LINE_AA)
+            else:
+                cv2.rectangle(layer, (x, y), (x + w, y + h), color, thickness)
             cv2.addWeighted(layer, alpha, image, 1 - alpha, 0, image)
-    cv2.rectangle(image, (x, y), (x + w, y + h), color, 4)
+    if len(polygon) >= 3:
+        cv2.polylines(image, [polygon], True, color, 4, cv2.LINE_AA)
+    else:
+        cv2.rectangle(image, (x, y), (x + w, y + h), color, 4)
     label = f"#{detection['rank']} {detection['score']:.2f}"
     if "ransac" in detection:
         label += f" R{detection['ransac'].get('inliers', 0)}"

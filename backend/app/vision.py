@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from .catalog import COLORS
-from .proposals import YoloSegCandidateProposalModel, Proposal, color_mask
+from .proposals import YoloSegCandidateProposalModel, Proposal, color_mask, contour_polygon
 from .query_parser import parse_query
 from .vector_index import PartVectorIndex, cosine, proposal_embedding, text_part_embedding
 
@@ -34,9 +34,13 @@ class Detection:
     proposalScore: float
     embeddingScore: float
     vectorScore: float
+    edgeContrast: float
+    outerTargetShare: float
+    backgroundSeparation: float
     dominantColorKey: str
     colorShares: dict[str, float]
     ransac: dict[str, Any]
+    maskPolygon: list[list[int]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -119,6 +123,8 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
     detections: list[Detection] = []
 
     candidate_features = target_color_image_components(image, target.colorKey)
+    candidate_features.extend(target_color_shade_components(image, target.colorKey, expected_ratio, expected_bbox_area))
+    candidate_features.extend(target_color_edge_rectangles(image, target.colorKey, expected_ratio, expected_bbox_area))
     for proposal in proposals:
         candidate_features.extend(target_color_subproposals(image, proposal, target.colorKey))
     if needs_local_window_search(image, proposals):
@@ -146,16 +152,20 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
         keypoint_score = min(1.0, ransac["inliers"] / max(8.0, expected_studs * 8.0 + 8.0))
         vector_score = embedding_score
         border_score = border_containment_score(image, box_features["bbox"])
+        separation_score = float(box_features.get("backgroundSeparationScore", 0.5))
+        edge_contrast = float(box_features.get("edgeContrast", 0.0))
+        outer_target_share = float(box_features.get("outerTargetShare", 0.0))
 
         score = (
-            target_share * 0.17
-            + bbox_size_score * 0.24
-            + keypoint_score * 0.16
+            target_share * 0.16
+            + bbox_size_score * 0.20
+            + keypoint_score * 0.14
             + shape_score * 0.09
-            + embedding_score * 0.10
-            + box_features["proposalScore"] * 0.09
-            + color_area_score * 0.07
-            + ransac_score * 0.06
+            + embedding_score * 0.09
+            + box_features["proposalScore"] * 0.08
+            + color_area_score * 0.06
+            + ransac_score * 0.05
+            + separation_score * 0.11
             + border_score * 0.02
         )
         if bbox_area < expected_bbox_area * 0.32:
@@ -172,6 +182,22 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
             score *= 0.68
         elif target_share < 0.72:
             score *= 0.82
+        if box_features.get("backgroundWindow"):
+            score *= 0.58 + separation_score * 0.42
+            if outer_target_share > 0.86 and separation_score < 0.22:
+                score *= 0.42
+            elif outer_target_share > 0.72 and separation_score < 0.34:
+                score *= 0.66
+        elif outer_target_share > 0.88 and separation_score < 0.18:
+            score *= 0.48
+        elif outer_target_share > 0.72 and separation_score < 0.28:
+            score *= 0.70
+        if box_features.get("shadeComponent") and separation_score > 0.34 and shape_score > 0.55:
+            score *= 1.08
+        if box_features.get("edgeRectangle") and separation_score > 0.28 and shape_score > 0.55:
+            score *= 1.12
+        if edge_contrast < 0.12 and outer_target_share > 0.70:
+            score *= 0.72
         score *= border_score
 
         detections.append(
@@ -188,9 +214,13 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
                 proposalScore=round(float(box_features["proposalScore"]), 4),
                 embeddingScore=round(float(embedding_score), 4),
                 vectorScore=round(float(vector_score), 4),
+                edgeContrast=round(float(edge_contrast), 3),
+                outerTargetShare=round(float(outer_target_share), 3),
+                backgroundSeparation=round(float(separation_score), 3),
                 dominantColorKey=dominant_color,
                 colorShares=box_features["colorShares"],
                 ransac=ransac,
+                maskPolygon=box_features.get("maskPolygon") or ransac.get("polygon"),
             )
         )
 
@@ -236,13 +266,13 @@ def target_color_subproposals(image: np.ndarray, proposal: Proposal, color_key: 
         if cw < 8 or ch < 8:
             continue
         global_box = {"x": x + cx, "y": y + cy, "width": cw, "height": ch}
-        item = box_features(image, global_box, proposal.proposalScore)
+        item = box_features(image, global_box, proposal.proposalScore, mask_polygon=contour_polygon(contour, offset=(x, y)))
         if item["fillRatio"] >= 0.16:
             features.append(item)
 
     if features:
         return sorted(features, key=lambda item: item["proposalScore"], reverse=True)
-    return [box_features(image, proposal.bbox, proposal.proposalScore)] if proposal.colorShares.get(color_key, 0.0) >= 0.08 else []
+    return [box_features(image, proposal.bbox, proposal.proposalScore, mask_polygon=proposal.maskPolygon)] if proposal.colorShares.get(color_key, 0.0) >= 0.08 else []
 
 
 def target_color_image_components(image: np.ndarray, color_key: str) -> list[dict[str, Any]]:
@@ -276,8 +306,226 @@ def target_color_image_components(image: np.ndarray, color_key: str) -> list[dic
         if fill_ratio < 0.14:
             continue
         base_score = min(0.999, fill_ratio * 0.36 + min(1.0, area / 2200) * 0.34 + 0.18)
-        features.append(box_features(image, {"x": x, "y": y, "width": w, "height": h}, base_score))
+        features.append(
+            box_features(
+                image,
+                {"x": x, "y": y, "width": w, "height": h},
+                base_score,
+                mask_polygon=contour_polygon(contour),
+            )
+        )
     return features
+
+
+def target_color_shade_components(
+    image: np.ndarray,
+    color_key: str,
+    expected_ratio: float,
+    expected_bbox_area: float,
+) -> list[dict[str, Any]]:
+    """Find foreground pieces whose color is merged with a same-color baseplate.
+
+    A large green baseplate and a green 2x4 brick can be one connected color
+    component. In that case a color mask alone cannot provide an object contour,
+    so we split broad regions by local brightness changes and keep brick-shaped
+    subcomponents with real edge separation.
+    """
+
+    blurred = cv2.GaussianBlur(image, (3, 3), 0)
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+    mask = target_component_mask(hsv, color_key)
+    value = hsv[:, :, 2]
+    image_area = max(1, image.shape[0] * image.shape[1])
+    min_area = max(120, int(image_area * 0.00025))
+    max_bbox_area = min(image_area * 0.22, expected_bbox_area * 6.0)
+    min_bbox_area = max(320.0, expected_bbox_area * 0.28)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    features: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+
+    for region in contours:
+        region_area = int(cv2.contourArea(region))
+        if region_area < min_area * 5:
+            continue
+        x, y, w, h = cv2.boundingRect(region)
+        if w * h < expected_bbox_area * 1.35:
+            continue
+
+        region_mask = mask[y : y + h, x : x + w]
+        values = value[y : y + h, x : x + w][region_mask > 0]
+        if values.size < min_area:
+            continue
+
+        thresholds: list[tuple[str, float]] = []
+        for percentile in (32, 42, 52):
+            thresholds.append(("dark", float(np.percentile(values, percentile))))
+        for percentile in (68, 78):
+            thresholds.append(("bright", float(np.percentile(values, percentile))))
+
+        for mode, threshold in thresholds:
+            if mode == "dark":
+                local = ((region_mask > 0) & (value[y : y + h, x : x + w] <= threshold)).astype(np.uint8) * 255
+            else:
+                local = ((region_mask > 0) & (value[y : y + h, x : x + w] >= threshold)).astype(np.uint8) * 255
+            local = cv2.morphologyEx(local, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1)
+            local = cv2.morphologyEx(local, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8), iterations=2)
+            sub_contours, _ = cv2.findContours(local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in sub_contours:
+                area = int(cv2.contourArea(contour))
+                if area < min_area:
+                    continue
+                cx, cy, cw, ch = cv2.boundingRect(contour)
+                if cw < 12 or ch < 12:
+                    continue
+                bbox_area = cw * ch
+                if bbox_area < min_bbox_area or bbox_area > max_bbox_area:
+                    continue
+                aspect_ratio = max(cw, ch) / max(1, min(cw, ch))
+                shape_score = ratio_score(aspect_ratio, expected_ratio)
+                if shape_score < 0.42:
+                    continue
+                global_box = {"x": x + cx, "y": y + cy, "width": cw, "height": ch}
+                target_density = np.count_nonzero(mask[y + cy : y + cy + ch, x + cx : x + cx + cw]) / max(1, bbox_area)
+                if target_density < 0.34:
+                    continue
+                key = (
+                    int(round(global_box["x"] / 4) * 4),
+                    int(round(global_box["y"] / 4) * 4),
+                    int(round(global_box["width"] / 4) * 4),
+                    int(round(global_box["height"] / 4) * 4),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                item = box_features(
+                    image,
+                    global_box,
+                    min(0.92, 0.60 + shape_score * 0.20 + min(1.0, area / 2600) * 0.12),
+                    mask_polygon=contour_polygon(contour, offset=(x, y)),
+                    metadata={"shadeComponent": True},
+                )
+                if item["backgroundSeparationScore"] >= 0.16 or shape_score >= 0.74:
+                    features.append(item)
+
+    return sorted(
+        features,
+        key=lambda item: (
+            item["backgroundSeparationScore"] * 0.46
+            + ratio_score(item["aspectRatio"], expected_ratio) * 0.34
+            + item["proposalScore"] * 0.20
+        ),
+        reverse=True,
+    )[:24]
+
+
+def target_color_edge_rectangles(
+    image: np.ndarray,
+    color_key: str,
+    expected_ratio: float,
+    expected_bbox_area: float,
+) -> list[dict[str, Any]]:
+    """Propose brick boxes from parallel edge pairs inside same-color regions."""
+
+    height, width = image.shape[:2]
+    image_area = max(1, height * width)
+    short_expected = max(12.0, np.sqrt(max(1.0, expected_bbox_area) / max(1.0, expected_ratio)))
+    long_expected = short_expected * expected_ratio
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred_gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred_gray, 35, 95)
+    hsv = cv2.cvtColor(cv2.GaussianBlur(image, (3, 3), 0), cv2.COLOR_BGR2HSV)
+    target_mask = target_component_mask(hsv, color_key)
+    target_mask = cv2.dilate(target_mask, np.ones((7, 7), dtype=np.uint8), iterations=1)
+    edges = cv2.bitwise_and(edges, target_mask)
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=42,
+        minLineLength=max(40, int(long_expected * 0.34)),
+        maxLineGap=14,
+    )
+    if lines is None:
+        return []
+
+    verticals: list[dict[str, float]] = []
+    for raw_line in lines[:, 0, :]:
+        x1, y1, x2, y2 = [int(value) for value in raw_line]
+        dx = x2 - x1
+        dy = y2 - y1
+        length = float(np.hypot(dx, dy))
+        if length < max(38.0, long_expected * 0.34):
+            continue
+        angle = abs(float(np.degrees(np.arctan2(dy, dx))))
+        angle_from_vertical = abs(90.0 - angle)
+        if angle_from_vertical > 14.0:
+            continue
+        verticals.append(
+            {
+                "x": (x1 + x2) / 2.0,
+                "y0": min(y1, y2),
+                "y1": max(y1, y2),
+                "length": length,
+                "tilt": angle_from_vertical,
+            }
+        )
+
+    features: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    for index, left in enumerate(verticals):
+        for right in verticals[index + 1 :]:
+            x_left = min(left["x"], right["x"])
+            x_right = max(left["x"], right["x"])
+            box_width = x_right - x_left
+            if box_width < short_expected * 0.45 or box_width > short_expected * 2.45:
+                continue
+            overlap = min(left["y1"], right["y1"]) - max(left["y0"], right["y0"])
+            if overlap / max(1.0, min(left["length"], right["length"])) < 0.34:
+                continue
+            y_top = min(left["y0"], right["y0"])
+            y_bottom = max(left["y1"], right["y1"])
+            box_height = y_bottom - y_top
+            if box_height < long_expected * 0.48 or box_height > long_expected * 2.35:
+                continue
+            aspect_ratio = max(box_width, box_height) / max(1.0, min(box_width, box_height))
+            shape_score = ratio_score(aspect_ratio, expected_ratio)
+            if shape_score < 0.52:
+                continue
+
+            pad = 0
+            box = {
+                "x": int(round(x_left - pad)),
+                "y": int(round(y_top - pad)),
+                "width": int(round(box_width + pad * 2)),
+                "height": int(round(box_height + pad * 2)),
+            }
+            x, y, w, h = clip_box(image, box)
+            if w * h < expected_bbox_area * 0.34 or w * h > min(image_area * 0.18, expected_bbox_area * 6.5):
+                continue
+            target_density = np.count_nonzero(target_mask[y : y + h, x : x + w]) / max(1, w * h)
+            if target_density < 0.38:
+                continue
+            key = (int(round(x / 6) * 6), int(round(y / 6) * 6), int(round(w / 6) * 6), int(round(h / 6) * 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            item = box_features(
+                image,
+                {"x": x, "y": y, "width": w, "height": h},
+                min(0.94, 0.58 + shape_score * 0.24 + min(1.0, (left["length"] + right["length"]) / (long_expected * 2.0)) * 0.12),
+                mask_polygon=[[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+                metadata={"edgeRectangle": True},
+            )
+            if item["backgroundSeparationScore"] >= 0.20 and item["outerTargetShare"] >= 0.55:
+                features.append(item)
+
+    return sorted(
+        features,
+        key=lambda item: item["backgroundSeparationScore"] * 0.42
+        + ratio_score(item["aspectRatio"], expected_ratio) * 0.38
+        + item["proposalScore"] * 0.20,
+        reverse=True,
+    )[:16]
 
 
 def target_color_search_windows(
@@ -308,8 +556,12 @@ def target_color_search_windows(
             if key in seen:
                 continue
             seen.add(key)
-            item = box_features(image, box, 0.72)
-            if item["colorShares"].get(color_key, 0.0) >= 0.22 and item["area"] >= min_pixels:
+            item = box_features(image, box, 0.66, metadata={"backgroundWindow": True})
+            if (
+                item["colorShares"].get(color_key, 0.0) >= 0.22
+                and item["area"] >= min_pixels
+                and (item["backgroundSeparationScore"] >= 0.08 or item["outerTargetShare"] < 0.72)
+            ):
                 features.append(item)
 
     return sorted(features, key=lambda item: item["proposalScore"], reverse=True)[:32]
@@ -360,8 +612,30 @@ def local_windows_for_component(
     return windows
 
 
-def box_features(image: np.ndarray, box: dict[str, int], base_score: float) -> dict[str, Any]:
+def box_features(
+    image: np.ndarray,
+    box: dict[str, int],
+    base_score: float,
+    mask_polygon: list[list[int]] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     x, y, w, h = clip_box(image, box)
+    if w <= 0 or h <= 0:
+        return {
+            "bbox": {"x": x, "y": y, "width": w, "height": h},
+            "area": 0,
+            "aspectRatio": 1.0,
+            "fillRatio": 0.0,
+            "solidity": 0.0,
+            "dominantColorKey": "red",
+            "colorShares": {key: 0.0 for key in COLORS},
+            "proposalScore": 0.0,
+            "edgeContrast": 0.0,
+            "outerTargetShare": 0.0,
+            "backgroundSeparationScore": 0.0,
+            "maskPolygon": mask_polygon or [],
+            **(metadata or {}),
+        }
     hsv = cv2.cvtColor(cv2.GaussianBlur(image[y : y + h, x : x + w], (3, 3), 0), cv2.COLOR_BGR2HSV)
     masks = {key: color_mask(hsv, key) for key in COLORS}
     shares = local_color_shares(masks)
@@ -372,7 +646,15 @@ def box_features(image: np.ndarray, box: dict[str, int], base_score: float) -> d
     aspect_ratio = max(w, h) / max(1, min(w, h))
     solidity = min(1.0, target_pixels / bbox_area)
     area_score = min(1.0, target_pixels / 1800)
-    proposal_score = min(0.999, base_score * 0.34 + fill_ratio * 0.28 + solidity * 0.20 + area_score * 0.18)
+    separation = foreground_separation_features(image, {"x": x, "y": y, "width": w, "height": h}, dominant)
+    proposal_score = min(
+        0.999,
+        base_score * 0.29
+        + fill_ratio * 0.24
+        + solidity * 0.17
+        + area_score * 0.14
+        + separation["backgroundSeparationScore"] * 0.16,
+    )
     return {
         "bbox": {"x": x, "y": y, "width": w, "height": h},
         "area": target_pixels,
@@ -382,7 +664,88 @@ def box_features(image: np.ndarray, box: dict[str, int], base_score: float) -> d
         "dominantColorKey": dominant,
         "colorShares": {key: round(float(value), 3) for key, value in shares.items()},
         "proposalScore": proposal_score,
+        "edgeContrast": separation["edgeContrast"],
+        "outerTargetShare": separation["outerTargetShare"],
+        "backgroundSeparationScore": separation["backgroundSeparationScore"],
+        "maskPolygon": mask_polygon or [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+        **(metadata or {}),
     }
+
+
+def foreground_separation_features(image: np.ndarray, box: dict[str, int], color_key: str) -> dict[str, float]:
+    """Measure whether a candidate has a real boundary against its surround."""
+
+    x, y, w, h = clip_box(image, box)
+    if w <= 0 or h <= 0:
+        return {"edgeContrast": 0.0, "outerTargetShare": 0.0, "backgroundSeparationScore": 0.0}
+
+    height, width = image.shape[:2]
+    margin = max(6, min(w, h) // 6)
+    x0 = max(0, x - margin)
+    y0 = max(0, y - margin)
+    x1 = min(width, x + w + margin)
+    y1 = min(height, y + h + margin)
+    expanded_w = x1 - x0
+    expanded_h = y1 - y0
+    if expanded_w <= w and expanded_h <= h:
+        return {"edgeContrast": 0.0, "outerTargetShare": 0.0, "backgroundSeparationScore": 0.0}
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    hsv = cv2.cvtColor(cv2.GaussianBlur(image, (3, 3), 0), cv2.COLOR_BGR2HSV)
+    target_mask = target_component_mask(hsv, color_key) > 0
+
+    ring = np.ones((expanded_h, expanded_w), dtype=bool)
+    local_x = x - x0
+    local_y = y - y0
+    ring[local_y : local_y + h, local_x : local_x + w] = False
+    ring_pixels = int(np.count_nonzero(ring))
+    if ring_pixels <= 0:
+        outer_target_share = 0.0
+        outer_values = np.array([], dtype=np.float32)
+    else:
+        outer_target_share = float(np.count_nonzero(target_mask[y0:y1, x0:x1][ring]) / ring_pixels)
+        outer_values = gray[y0:y1, x0:x1][ring]
+
+    border_width = max(2, min(w, h) // 10)
+    inner_border = np.zeros((h, w), dtype=bool)
+    inner_border[:border_width, :] = True
+    inner_border[-border_width:, :] = True
+    inner_border[:, :border_width] = True
+    inner_border[:, -border_width:] = True
+    inner_values = gray[y : y + h, x : x + w][inner_border]
+    luma_delta = abs(float(inner_values.mean()) - float(outer_values.mean())) if inner_values.size and outer_values.size else 0.0
+
+    crop = gray[y0:y1, x0:x1]
+    sobel_x = cv2.Sobel(crop, cv2.CV_32F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(crop, cv2.CV_32F, 0, 1, ksize=3)
+    gradient = np.sqrt(sobel_x * sobel_x + sobel_y * sobel_y)
+    border_band = np.zeros_like(gradient, dtype=bool)
+    band = 3
+    border_band[max(0, local_y - band) : min(expanded_h, local_y + band + 1), local_x : local_x + w] = True
+    border_band[
+        max(0, local_y + h - band) : min(expanded_h, local_y + h + band + 1),
+        local_x : local_x + w,
+    ] = True
+    border_band[local_y : local_y + h, max(0, local_x - band) : min(expanded_w, local_x + band + 1)] = True
+    border_band[
+        local_y : local_y + h,
+        max(0, local_x + w - band) : min(expanded_w, local_x + w + band + 1),
+    ] = True
+    border_gradient = float(np.percentile(gradient[border_band], 75)) if np.count_nonzero(border_band) else 0.0
+
+    edge_score = clamp_float((border_gradient - 18.0) / 42.0)
+    luma_score = clamp_float(luma_delta / 28.0)
+    outer_penalty = clamp_float((outer_target_share - 0.42) / 0.50)
+    separation_score = clamp_float(0.16 + edge_score * 0.66 + luma_score * 0.28 - outer_penalty * 0.34)
+    return {
+        "edgeContrast": round(float(edge_score), 4),
+        "outerTargetShare": round(float(outer_target_share), 4),
+        "backgroundSeparationScore": round(float(separation_score), 4),
+    }
+
+
+def clamp_float(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    return float(max(minimum, min(maximum, value)))
 
 
 def local_color_shares(masks: dict[str, np.ndarray]) -> dict[str, float]:

@@ -48,17 +48,20 @@ NUMBER_WORDS = {
 CATEGORY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("plate", re.compile(r"플레이트|납작한?|얇은|plate|flat|thin", re.I)),
     ("tile", re.compile(r"타일|스터드\s*없|민자|매끈|tile|smooth|studless", re.I)),
+    ("head", re.compile(r"사람\s*얼굴|얼굴|머리|헤드|미니피겨|피규어|face|head|minifig(?:ure)?", re.I)),
     ("brick", re.compile(r"브릭|블럭|블록|기본\s*블록|brick|block", re.I)),
 ]
 
 SHAPE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("slope", re.compile(r"경사|사선|비스듬|슬로프|slope|sloped|wedge", re.I)),
+    ("round", re.compile(r"사람\s*얼굴|얼굴|머리|헤드|미니피겨|피규어|face|head|minifig(?:ure)?", re.I)),
     ("round", re.compile(r"둥근|원형|라운드|round|cylinder|cylindrical", re.I)),
     ("corner", re.compile(r"코너|모서리|corner", re.I)),
     ("rectangular", re.compile(r"직사각|사각|rectangular|rectangle", re.I)),
 ]
 
 ATTRIBUTE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("face_print", re.compile(r"사람\s*얼굴|얼굴|표정|눈|입|스마일|face|smile|printed\s*face", re.I)),
     ("transparent", re.compile(r"투명|클리어|transparent|trans[- ]?clear", re.I)),
     ("printed", re.compile(r"프린트|무늬|패턴|printed|pattern", re.I)),
     ("hinge", re.compile(r"힌지|관절|hinge", re.I)),
@@ -86,6 +89,8 @@ def parse_query(text: str, source: str = "server-text") -> PartTarget:
             category = key
             matched_category = True
             break
+    if category == "head" and not matched_dims:
+        width, length = 1, 1
 
     height = infer_height(raw, category)
     shape = "rectangular"
@@ -98,7 +103,7 @@ def parse_query(text: str, source: str = "server-text") -> PartTarget:
     negative_terms = parse_negative_terms(raw)
     confidence = {
         "color": 0.96 if matched_color else 0.28,
-        "dimensions": 0.92 if matched_dims else 0.24,
+        "dimensions": 0.92 if matched_dims else 0.64 if category == "head" else 0.24,
         "category": 0.88 if matched_category else 0.42,
         "shape": 0.82 if shape != "rectangular" or re.search(r"직사각|사각|rectangular", raw, re.I) else 0.36,
         "height": 0.8 if height != "standard" or matched_category else 0.4,
@@ -148,6 +153,8 @@ def infer_height(raw: str, category: str) -> str:
         return "thin"
     if category == "tile":
         return "tile"
+    if category == "head":
+        return "standard"
     return "standard"
 
 
