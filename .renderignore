@@ -1,0 +1,10 @@
+frontend
+docker-compose.yml
+.git
+.gitignore
+README.md
+docs
+data/external_eval
+data/synthetic_lego/images
+data/synthetic_lego/labels
+data/synthetic_lego/masks

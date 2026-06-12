@@ -90,3 +90,42 @@ def test_same_color_non_lego_blob_is_not_reported_as_brick():
 
     result = search_image_bytes(encoded.tobytes(), "red 2x2 brick")
     assert result["detections"] == []
+
+
+def test_touching_smaller_bricks_are_not_reported_as_one_long_brick():
+    image = np.full((360, 640, 3), (45, 45, 45), dtype=np.uint8)
+    yellow = (53, 216, 253)
+    seam = (30, 130, 150)
+    cv2.rectangle(image, (180, 160), (282, 190), yellow, -1)
+    for seam_x in (214, 248):
+        cv2.line(image, (seam_x, 160), (seam_x, 190), seam, 1)
+    for x in (180, 214, 248):
+        for row in range(2):
+            for col in range(2):
+                cv2.circle(image, (x + 8 + col * 14, 168 + row * 14), 4, (95, 245, 255), -1)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
+
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+
+    result = search_image_bytes(encoded.tobytes(), "yellow 2x6 brick")
+    assert result["detections"] == []
+
+
+def test_single_long_brick_is_not_rejected_as_cluster():
+    image = np.full((360, 640, 3), (45, 45, 45), dtype=np.uint8)
+    yellow = (53, 216, 253)
+    cv2.rectangle(image, (180, 160), (282, 190), yellow, -1)
+    for row in range(2):
+        for col in range(6):
+            cv2.circle(image, (188 + col * 16, 168 + row * 14), 4, (95, 245, 255), -1)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
+
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+
+    result = search_image_bytes(encoded.tobytes(), "yellow 2x6 brick")
+    assert result["detections"]
+    top = result["detections"][0]
+    assert top["objectSplitScore"] < 0.20
+    assert top["shapeScore"] > 0.85

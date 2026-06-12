@@ -36,6 +36,7 @@ class Detection:
     vectorScore: float
     edgeContrast: float
     legoCueScore: float
+    objectSplitScore: float
     outerTargetShare: float
     backgroundSeparation: float
     dominantColorKey: str
@@ -141,6 +142,8 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
         fill_ratio = box_features["fillRatio"]
         dominant_color = box_features["dominantColorKey"]
         shape_score = ratio_score(aspect_ratio, expected_ratio)
+        if getattr(target, "dimensionKnown", False) and shape_score < 0.30:
+            continue
         bbox_area = max(1, box_features["bbox"]["width"] * box_features["bbox"]["height"])
         color_area_score = min(1.0, box_features["area"] / max(1.0, expected_bbox_area * 0.55))
         bbox_size_score = size_floor_score(bbox_area, expected_bbox_area)
@@ -156,9 +159,12 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
         separation_score = float(box_features.get("backgroundSeparationScore", 0.5))
         edge_contrast = float(box_features.get("edgeContrast", 0.0))
         lego_cue_score = float(box_features.get("legoCueScore", 0.0))
+        object_split_score = float(box_features.get("objectSplitScore", 0.0))
         outer_target_share = float(box_features.get("outerTargetShare", 0.0))
 
         if lego_cue_score < 0.18:
+            continue
+        if object_split_score >= 0.55 and bbox_area >= expected_bbox_area * 0.35:
             continue
         if box_features.get("backgroundWindow") and edge_contrast < 0.08 and separation_score < 0.38:
             continue
@@ -176,6 +182,8 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
             + lego_cue_score * 0.07
             + border_score * 0.02
         )
+        if object_split_score >= 0.30:
+            score *= max(0.30, 1.0 - object_split_score * 0.82)
         if bbox_area < expected_bbox_area * 0.18:
             score *= 0.70 if lego_cue_score >= 0.42 else 0.52
         elif bbox_area < expected_bbox_area * 0.32:
@@ -230,6 +238,7 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
                 vectorScore=round(float(vector_score), 4),
                 edgeContrast=round(float(edge_contrast), 3),
                 legoCueScore=round(float(lego_cue_score), 3),
+                objectSplitScore=round(float(object_split_score), 3),
                 outerTargetShare=round(float(outer_target_share), 3),
                 backgroundSeparation=round(float(separation_score), 3),
                 dominantColorKey=dominant_color,
@@ -647,6 +656,7 @@ def box_features(
             "proposalScore": 0.0,
             "edgeContrast": 0.0,
             "legoCueScore": 0.0,
+            "objectSplitScore": 0.0,
             "outerTargetShare": 0.0,
             "backgroundSeparationScore": 0.0,
             "maskPolygon": mask_polygon or [],
@@ -664,6 +674,7 @@ def box_features(
     area_score = min(1.0, target_pixels / 1800)
     separation = foreground_separation_features(image, {"x": x, "y": y, "width": w, "height": h}, dominant)
     lego_cues = lego_cue_features(image, {"x": x, "y": y, "width": w, "height": h}, masks.get(dominant))
+    object_split_score = object_split_score_for_box(image, {"x": x, "y": y, "width": w, "height": h})
     proposal_score = min(
         0.999,
         base_score * 0.29
@@ -684,11 +695,69 @@ def box_features(
         "proposalScore": proposal_score,
         "edgeContrast": separation["edgeContrast"],
         "legoCueScore": lego_cues["legoCueScore"],
+        "objectSplitScore": object_split_score,
         "outerTargetShare": separation["outerTargetShare"],
         "backgroundSeparationScore": separation["backgroundSeparationScore"],
         "maskPolygon": mask_polygon or [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
         **(metadata or {}),
     }
+
+
+def object_split_score_for_box(image: np.ndarray, box: dict[str, int]) -> float:
+    """Detect long internal seams that suggest a box contains multiple pieces."""
+
+    x, y, w, h = clip_box(image, box)
+    if w < 24 or h < 18:
+        return 0.0
+
+    crop = image[y : y + h, x : x + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    grad_x = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+    grad_y = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+
+    x_margin = max(3, w // 10)
+    y_margin = max(3, h // 10)
+    if w <= x_margin * 2 + 2 or h <= y_margin * 2 + 2:
+        return 0.0
+
+    inner_x = slice(x_margin, w - x_margin)
+    inner_y = slice(y_margin, h - y_margin)
+    inner_grad_x = grad_x[inner_y, inner_x]
+    inner_grad_y = grad_y[inner_y, inner_x]
+    if inner_grad_x.size == 0 or inner_grad_y.size == 0:
+        return 0.0
+
+    threshold_x = max(18.0, float(np.percentile(inner_grad_x, 88)))
+    threshold_y = max(18.0, float(np.percentile(inner_grad_y, 88)))
+    vertical_density = (inner_grad_x > threshold_x).sum(axis=0) / max(1, inner_grad_x.shape[0])
+    horizontal_density = (inner_grad_y > threshold_y).sum(axis=1) / max(1, inner_grad_y.shape[1])
+
+    vertical = long_internal_line_score(vertical_density, 0.68)
+    horizontal = long_internal_line_score(horizontal_density, 0.68)
+    return round(float(max(vertical, horizontal)), 4)
+
+
+def long_internal_line_score(density: np.ndarray, threshold: float) -> float:
+    if density.size == 0:
+        return 0.0
+
+    groups: list[float] = []
+    index = 0
+    while index < len(density):
+        if density[index] < threshold:
+            index += 1
+            continue
+        start = index
+        while index < len(density) and density[index] >= threshold:
+            index += 1
+        if start <= 1 or index >= len(density) - 1:
+            continue
+        groups.append(float(density[start:index].max()))
+
+    if not groups:
+        return 0.0
+    return clamp_float(max(groups) * min(1.0, len(groups) / 2.0))
 
 
 def lego_cue_features(image: np.ndarray, box: dict[str, int], color_mask_crop: np.ndarray | None) -> dict[str, float]:
