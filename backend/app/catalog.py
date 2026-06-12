@@ -35,9 +35,46 @@ PART_NUMBERS = {
     "tile-2x2": "3068",
     "tile-1x2": "3069",
     "head-1x1": "3626",
+    "technic_pin-1x1": "2780",
+    "axle-1x2": "32062",
+    "wheel-1x1": "55982",
+    "tire-1x1": "61254",
+    "hinge-1x2": "3937",
+    "clip-1x1": "4085",
+    "bar-1x4": "30374",
+    "slope-2x2": "3039",
+    "wedge-2x3": "43722",
+    "cone-1x1": "4589",
+    "window-1x2": "60592",
+    "door-1x4": "3861",
+    "bracket-1x2": "99780",
+    "panel-1x2": "4865",
+    "minifigure-1x1": "973",
 }
 
-CATEGORY_LABELS = {"brick": "기본 브릭", "plate": "플레이트", "tile": "타일", "head": "미니피겨 헤드"}
+CATEGORY_LABELS = {
+    "brick": "기본 브릭",
+    "plate": "플레이트",
+    "tile": "타일",
+    "head": "미니피겨 헤드",
+    "technic_pin": "테크닉 핀",
+    "axle": "테크닉 액슬",
+    "wheel": "휠",
+    "tire": "타이어",
+    "hinge": "힌지",
+    "clip": "클립",
+    "bar": "바",
+    "slope": "슬로프",
+    "wedge": "웨지",
+    "cone": "콘",
+    "window": "창문",
+    "door": "문",
+    "bracket": "브라켓",
+    "panel": "패널",
+    "minifigure": "미니피겨 부품",
+    "modified": "변형 브릭",
+    "special": "특수 부품",
+}
 
 
 @dataclass(frozen=True)
@@ -60,6 +97,7 @@ class PartTarget:
     attributes: list[str] = field(default_factory=list)
     negativeTerms: list[str] = field(default_factory=list)
     confidence: dict[str, float] = field(default_factory=dict)
+    dimensionKnown: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,15 +115,18 @@ def make_target(
     attributes: list[str] | None = None,
     negative_terms: list[str] | None = None,
     confidence: dict[str, float] | None = None,
+    dimension_known: bool = True,
 ) -> PartTarget:
     color = COLORS.get(color_key, COLORS["red"])
-    category = category if category in CATEGORY_LABELS else "brick"
+    category = category if category in CATEGORY_LABELS else "special"
     key = f"{category}-{width}x{length}"
     alt_key = f"{category}-{length}x{width}"
     part_num = PART_NUMBERS.get(key) or PART_NUMBERS.get(alt_key) or "unknown"
     category_label = CATEGORY_LABELS[category]
     if category == "head":
         name = f"{color['label']} 사람 얼굴 {category_label}" if "face_print" in (attributes or []) else f"{color['label']} {category_label}"
+    elif not dimension_known or category not in {"brick", "plate", "tile"}:
+        name = f"{color['label']} {category_label}"
     else:
         name = f"{color['label']} {width}x{length} {category_label}"
     return PartTarget(
@@ -107,6 +148,7 @@ def make_target(
         attributes=attributes or [],
         negativeTerms=negative_terms or [],
         confidence=confidence or {},
+        dimensionKnown=dimension_known,
     )
 
 
@@ -118,6 +160,21 @@ COMMON_PARTS: list[PartTarget] = [
         "plate": [(1, 2), (2, 2), (1, 4)],
         "tile": [(2, 2), (1, 2)],
         "head": [(1, 1)],
+        "technic_pin": [(1, 1)],
+        "axle": [(1, 2)],
+        "wheel": [(1, 1)],
+        "tire": [(1, 1)],
+        "hinge": [(1, 2)],
+        "clip": [(1, 1)],
+        "bar": [(1, 4)],
+        "slope": [(2, 2)],
+        "wedge": [(2, 3)],
+        "cone": [(1, 1)],
+        "window": [(1, 2)],
+        "door": [(1, 4)],
+        "bracket": [(1, 2)],
+        "panel": [(1, 2)],
+        "minifigure": [(1, 1)],
     }.items()
     for width, length in dims
 ]

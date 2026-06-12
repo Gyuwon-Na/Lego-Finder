@@ -46,16 +46,30 @@ NUMBER_WORDS = {
 }
 
 CATEGORY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("head", re.compile(r"사람\s*얼굴|얼굴|머리|헤드|미니피겨|피규어|face|head|minifig(?:ure)?", re.I)),
+    ("technic_pin", re.compile(r"테크닉\s*핀|핀\s*브릭|핀\b|technic\s*pin|connector\s*peg|peg", re.I)),
+    ("axle", re.compile(r"액슬|축|axle", re.I)),
+    ("wheel", re.compile(r"바퀴|휠|wheel", re.I)),
+    ("tire", re.compile(r"타이어|tire|tyre", re.I)),
+    ("hinge", re.compile(r"힌지|관절|hinge", re.I)),
+    ("clip", re.compile(r"클립|집게|clip|claw", re.I)),
+    ("bar", re.compile(r"막대|바\b|bar|rod|wand", re.I)),
+    ("window", re.compile(r"창문|윈도우|window|windscreen|windshield", re.I)),
+    ("door", re.compile(r"문\b|도어|door", re.I)),
+    ("bracket", re.compile(r"브라켓|bracket", re.I)),
+    ("panel", re.compile(r"패널|panel|wall", re.I)),
+    ("cone", re.compile(r"콘|깔때기|cone", re.I)),
+    ("wedge", re.compile(r"쐐기|웨지|wedge", re.I)),
+    ("slope", re.compile(r"경사|사선|비스듬|슬로프|slope|sloped", re.I)),
     ("plate", re.compile(r"플레이트|납작한?|얇은|plate|flat|thin", re.I)),
     ("tile", re.compile(r"타일|스터드\s*없|민자|매끈|tile|smooth|studless", re.I)),
-    ("head", re.compile(r"사람\s*얼굴|얼굴|머리|헤드|미니피겨|피규어|face|head|minifig(?:ure)?", re.I)),
     ("brick", re.compile(r"브릭|블럭|블록|기본\s*블록|brick|block", re.I)),
 ]
 
 SHAPE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("slope", re.compile(r"경사|사선|비스듬|슬로프|slope|sloped|wedge", re.I)),
     ("round", re.compile(r"사람\s*얼굴|얼굴|머리|헤드|미니피겨|피규어|face|head|minifig(?:ure)?", re.I)),
-    ("round", re.compile(r"둥근|원형|라운드|round|cylinder|cylindrical", re.I)),
+    ("round", re.compile(r"둥근|원형|라운드|바퀴|휠|타이어|콘|핀|round|cylinder|cylindrical|wheel|tire|tyre|cone|pin", re.I)),
     ("corner", re.compile(r"코너|모서리|corner", re.I)),
     ("rectangular", re.compile(r"직사각|사각|rectangular|rectangle", re.I)),
 ]
@@ -67,7 +81,30 @@ ATTRIBUTE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("hinge", re.compile(r"힌지|관절|hinge", re.I)),
     ("wheel", re.compile(r"바퀴|휠|wheel|tire|tyre", re.I)),
     ("studs", re.compile(r"스터드|studs?", re.I)),
+    ("technic", re.compile(r"테크닉|technic", re.I)),
+    ("minifigure", re.compile(r"미니피겨|피규어|minifig(?:ure)?", re.I)),
 ]
+
+DEFAULT_DIMENSIONS_BY_CATEGORY = {
+    "head": (1, 1),
+    "technic_pin": (1, 1),
+    "axle": (1, 2),
+    "wheel": (1, 1),
+    "tire": (1, 1),
+    "hinge": (1, 2),
+    "clip": (1, 1),
+    "bar": (1, 4),
+    "window": (1, 2),
+    "door": (1, 4),
+    "bracket": (1, 2),
+    "panel": (1, 2),
+    "cone": (1, 1),
+    "wedge": (2, 3),
+    "slope": (2, 2),
+    "minifigure": (1, 1),
+    "modified": (1, 1),
+    "special": (1, 1),
+}
 
 
 def parse_query(text: str, source: str = "server-text") -> PartTarget:
@@ -89,8 +126,8 @@ def parse_query(text: str, source: str = "server-text") -> PartTarget:
             category = key
             matched_category = True
             break
-    if category == "head" and not matched_dims:
-        width, length = 1, 1
+    if not matched_dims and category in DEFAULT_DIMENSIONS_BY_CATEGORY:
+        width, length = DEFAULT_DIMENSIONS_BY_CATEGORY[category]
 
     height = infer_height(raw, category)
     shape = "rectangular"
@@ -103,7 +140,7 @@ def parse_query(text: str, source: str = "server-text") -> PartTarget:
     negative_terms = parse_negative_terms(raw)
     confidence = {
         "color": 0.96 if matched_color else 0.28,
-        "dimensions": 0.92 if matched_dims else 0.64 if category == "head" else 0.24,
+        "dimensions": 0.92 if matched_dims else 0.64 if category in DEFAULT_DIMENSIONS_BY_CATEGORY else 0.24,
         "category": 0.88 if matched_category else 0.42,
         "shape": 0.82 if shape != "rectangular" or re.search(r"직사각|사각|rectangular", raw, re.I) else 0.36,
         "height": 0.8 if height != "standard" or matched_category else 0.4,
@@ -120,6 +157,7 @@ def parse_query(text: str, source: str = "server-text") -> PartTarget:
         attributes=attributes,
         negative_terms=negative_terms,
         confidence=confidence,
+        dimension_known=matched_dims or category in {"brick", "plate", "tile"},
     )
 
 

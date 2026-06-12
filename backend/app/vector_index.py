@@ -22,6 +22,30 @@ HEIGHT_ORDER = ["standard", "thin", "tile", "tall"]
 SHAPE_ORDER = ["rectangular", "slope", "round", "corner"]
 EMBEDDING_DIM = len(COLORS) + len(CATEGORY_ORDER) + len(HEIGHT_ORDER) + len(SHAPE_ORDER) + 8
 
+VISUAL_CATEGORY_BUCKETS = {
+    "plate": "plate",
+    "tile": "tile",
+    "brick": "brick",
+    "head": "brick",
+    "technic_pin": "brick",
+    "axle": "brick",
+    "wheel": "brick",
+    "tire": "brick",
+    "hinge": "brick",
+    "clip": "brick",
+    "bar": "brick",
+    "slope": "brick",
+    "wedge": "brick",
+    "cone": "brick",
+    "window": "brick",
+    "door": "brick",
+    "bracket": "brick",
+    "panel": "brick",
+    "minifigure": "brick",
+    "modified": "brick",
+    "special": "brick",
+}
+
 
 @dataclass(frozen=True)
 class IndexHit:
@@ -105,7 +129,8 @@ class PartVectorIndex:
 def text_part_embedding(part: PartTarget) -> np.ndarray:
     color_keys = list(COLORS.keys())
     color = one_hot(color_keys.index(part.colorKey), len(color_keys))
-    category_index = CATEGORY_ORDER.index(part.category) if part.category in CATEGORY_ORDER else 0
+    category_key = visual_category_bucket(part.category)
+    category_index = CATEGORY_ORDER.index(category_key)
     category = one_hot(category_index, len(CATEGORY_ORDER))
     height_index = HEIGHT_ORDER.index(part.height) if part.height in HEIGHT_ORDER else 0
     height = one_hot(height_index, len(HEIGHT_ORDER))
@@ -139,7 +164,8 @@ def proposal_embedding(
     color_keys = list(COLORS.keys())
     color_index = color_keys.index(dominant_color_key) if dominant_color_key in color_keys else 0
     color = one_hot(color_index, len(color_keys))
-    category = one_hot(CATEGORY_ORDER.index(target.category), len(CATEGORY_ORDER))
+    category_key = visual_category_bucket(target.category)
+    category = one_hot(CATEGORY_ORDER.index(category_key), len(CATEGORY_ORDER))
     height_index = HEIGHT_ORDER.index(target.height) if target.height in HEIGHT_ORDER else 0
     height = one_hot(height_index, len(HEIGHT_ORDER))
     shape_index = SHAPE_ORDER.index(target.shape) if target.shape in SHAPE_ORDER else 0
@@ -171,6 +197,10 @@ def one_hot(index: int, size: int) -> np.ndarray:
     vector = np.zeros(size, dtype=np.float32)
     vector[index] = 1.0
     return vector
+
+
+def visual_category_bucket(category: str) -> str:
+    return VISUAL_CATEGORY_BUCKETS.get(category, "brick")
 
 
 def normalize(vector: np.ndarray) -> np.ndarray:

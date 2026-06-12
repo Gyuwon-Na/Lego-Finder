@@ -25,7 +25,7 @@ import httpx  # noqa: E402
 import numpy as np  # noqa: E402
 
 from app.catalog import PART_NUMBERS, make_target  # noqa: E402
-from app.main import infer_category, infer_color_key, infer_dimensions  # noqa: E402
+from app.main import infer_attributes, infer_category, infer_color_key, infer_dimensions, infer_shape, has_explicit_dimensions  # noqa: E402
 from app.vector_index import text_part_embedding  # noqa: E402
 
 
@@ -161,8 +161,17 @@ def normalize_part(item: dict) -> dict | None:
     if not parsed:
         return None
     color_key = infer_color_key(name)
-    width, length, category = parsed
-    target = make_target(color_key, width, length, category, source="rebrickable-index")
+    width, length, category, dimension_known = parsed
+    target = make_target(
+        color_key,
+        width,
+        length,
+        category,
+        source="rebrickable-index",
+        shape=infer_shape(name),
+        attributes=infer_attributes(name),
+        dimension_known=dimension_known,
+    )
     payload = target.to_dict()
     payload["partNum"] = item.get("part_num") or payload["partNum"]
     payload["externalName"] = name
@@ -177,8 +186,17 @@ def normalize_part_color_variant(part_info: dict, color_item: dict) -> dict | No
         return None
     color_name = color_item.get("color_name") or ""
     color_key = infer_color_key(color_name)
-    width, length, category = parsed
-    target = make_target(color_key, width, length, category, source="rebrickable-color-index")
+    width, length, category, dimension_known = parsed
+    target = make_target(
+        color_key,
+        width,
+        length,
+        category,
+        source="rebrickable-color-index",
+        shape=infer_shape(name),
+        attributes=infer_attributes(name),
+        dimension_known=dimension_known,
+    )
     payload = target.to_dict()
     payload["partNum"] = part_info.get("part_num") or payload["partNum"]
     payload["externalName"] = name
@@ -200,8 +218,18 @@ def normalize_set_part(set_num: str, item: dict) -> dict | None:
         return None
     color_name = color_info.get("name") or ""
     color_key = infer_color_key(color_name)
-    width, length, category = parsed
-    target = make_target(color_key, width, length, category, item.get("quantity", 1), "rebrickable-set-index")
+    width, length, category, dimension_known = parsed
+    target = make_target(
+        color_key,
+        width,
+        length,
+        category,
+        item.get("quantity", 1),
+        "rebrickable-set-index",
+        shape=infer_shape(name),
+        attributes=infer_attributes(name),
+        dimension_known=dimension_known,
+    )
     payload = target.to_dict()
     payload["partNum"] = part_info.get("part_num") or payload["partNum"]
     payload["externalName"] = name
@@ -220,15 +248,40 @@ def make_record(payload: dict, target: object, source_id: str) -> dict:
     }
 
 
-def parse_supported_part(name: str) -> tuple[int, int, str] | None:
+DEFAULT_DIMS_BY_CATEGORY = {
+    "head": (1, 1),
+    "technic_pin": (1, 1),
+    "axle": (1, 2),
+    "wheel": (1, 1),
+    "tire": (1, 1),
+    "hinge": (1, 2),
+    "clip": (1, 1),
+    "bar": (1, 4),
+    "window": (1, 2),
+    "door": (1, 4),
+    "bracket": (1, 2),
+    "panel": (1, 2),
+    "cone": (1, 1),
+    "wedge": (2, 3),
+    "slope": (2, 2),
+    "minifigure": (1, 1),
+    "modified": (1, 1),
+    "special": (1, 1),
+}
+
+
+def parse_supported_part(name: str) -> tuple[int, int, str, bool] | None:
     lowered = name.lower()
-    if not any(token in lowered for token in ["brick", "plate", "tile"]):
+    category = infer_category(name)
+    if category == "brick" and not any(token in lowered for token in ["brick", "block"]):
         return None
-    match = re.search(r"(\d+)\s*x\s*(\d+)", name, re.I)
-    if not match:
-        return None
-    width, length = int(match.group(1)), int(match.group(2))
-    return width, length, infer_category(name)
+    if has_explicit_dimensions(name):
+        width, length = infer_dimensions(name)
+        return width, length, category, True
+    if category in DEFAULT_DIMS_BY_CATEGORY:
+        width, length = DEFAULT_DIMS_BY_CATEGORY[category]
+        return width, length, category, False
+    return None
 
 
 def dedupe(records: list[dict]) -> list[dict]:

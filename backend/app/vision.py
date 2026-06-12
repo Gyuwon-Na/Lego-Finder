@@ -35,6 +35,7 @@ class Detection:
     embeddingScore: float
     vectorScore: float
     edgeContrast: float
+    legoCueScore: float
     outerTargetShare: float
     backgroundSeparation: float
     dominantColorKey: str
@@ -117,7 +118,7 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
     expected_ratio = max(target.width, target.length) / max(1, min(target.width, target.length))
     target_vector = text_part_embedding(target)
     image_area = max(1, image.shape[0] * image.shape[1])
-    min_target_area = max(240, int(image_area * 0.0005))
+    min_target_area = max(70, int(image_area * 0.00016))
     expected_studs = max(1, target.width * target.length)
     expected_bbox_area = image_area * 0.024 * (expected_studs / 8) ** 0.72
     detections: list[Detection] = []
@@ -154,11 +155,17 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
         border_score = border_containment_score(image, box_features["bbox"])
         separation_score = float(box_features.get("backgroundSeparationScore", 0.5))
         edge_contrast = float(box_features.get("edgeContrast", 0.0))
+        lego_cue_score = float(box_features.get("legoCueScore", 0.0))
         outer_target_share = float(box_features.get("outerTargetShare", 0.0))
+
+        if lego_cue_score < 0.18:
+            continue
+        if box_features.get("backgroundWindow") and edge_contrast < 0.08 and separation_score < 0.38:
+            continue
 
         score = (
             target_share * 0.16
-            + bbox_size_score * 0.20
+            + bbox_size_score * 0.15
             + keypoint_score * 0.14
             + shape_score * 0.09
             + embedding_score * 0.09
@@ -166,12 +173,15 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
             + color_area_score * 0.06
             + ransac_score * 0.05
             + separation_score * 0.11
+            + lego_cue_score * 0.07
             + border_score * 0.02
         )
-        if bbox_area < expected_bbox_area * 0.32:
-            score *= 0.58
+        if bbox_area < expected_bbox_area * 0.18:
+            score *= 0.70 if lego_cue_score >= 0.42 else 0.52
+        elif bbox_area < expected_bbox_area * 0.32:
+            score *= 0.84 if lego_cue_score >= 0.42 else 0.68
         elif bbox_area < expected_bbox_area * 0.48:
-            score *= 0.78
+            score *= 0.92
         if bbox_area > image_area * 0.42:
             score *= 0.62
         if dominant_color != target.colorKey:
@@ -198,6 +208,10 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
             score *= 1.12
         if edge_contrast < 0.12 and outer_target_share > 0.70:
             score *= 0.72
+        if lego_cue_score < 0.34:
+            score *= 0.58
+        elif lego_cue_score < 0.48:
+            score *= 0.82
         score *= border_score
 
         detections.append(
@@ -215,6 +229,7 @@ def rank_proposals(image: np.ndarray, proposals: list[Proposal], target: Any, ma
                 embeddingScore=round(float(embedding_score), 4),
                 vectorScore=round(float(vector_score), 4),
                 edgeContrast=round(float(edge_contrast), 3),
+                legoCueScore=round(float(lego_cue_score), 3),
                 outerTargetShare=round(float(outer_target_share), 3),
                 backgroundSeparation=round(float(separation_score), 3),
                 dominantColorKey=dominant_color,
@@ -631,6 +646,7 @@ def box_features(
             "colorShares": {key: 0.0 for key in COLORS},
             "proposalScore": 0.0,
             "edgeContrast": 0.0,
+            "legoCueScore": 0.0,
             "outerTargetShare": 0.0,
             "backgroundSeparationScore": 0.0,
             "maskPolygon": mask_polygon or [],
@@ -647,13 +663,15 @@ def box_features(
     solidity = min(1.0, target_pixels / bbox_area)
     area_score = min(1.0, target_pixels / 1800)
     separation = foreground_separation_features(image, {"x": x, "y": y, "width": w, "height": h}, dominant)
+    lego_cues = lego_cue_features(image, {"x": x, "y": y, "width": w, "height": h}, masks.get(dominant))
     proposal_score = min(
         0.999,
         base_score * 0.29
         + fill_ratio * 0.24
         + solidity * 0.17
         + area_score * 0.14
-        + separation["backgroundSeparationScore"] * 0.16,
+        + separation["backgroundSeparationScore"] * 0.10
+        + lego_cues["legoCueScore"] * 0.06,
     )
     return {
         "bbox": {"x": x, "y": y, "width": w, "height": h},
@@ -665,11 +683,134 @@ def box_features(
         "colorShares": {key: round(float(value), 3) for key, value in shares.items()},
         "proposalScore": proposal_score,
         "edgeContrast": separation["edgeContrast"],
+        "legoCueScore": lego_cues["legoCueScore"],
         "outerTargetShare": separation["outerTargetShare"],
         "backgroundSeparationScore": separation["backgroundSeparationScore"],
         "maskPolygon": mask_polygon or [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
         **(metadata or {}),
     }
+
+
+def lego_cue_features(image: np.ndarray, box: dict[str, int], color_mask_crop: np.ndarray | None) -> dict[str, float]:
+    """Estimate whether a color blob looks like a LEGO part, not just a color match."""
+
+    x, y, w, h = clip_box(image, box)
+    if w <= 0 or h <= 0:
+        return {"legoCueScore": 0.0}
+
+    crop = image[y : y + h, x : x + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    if color_mask_crop is None:
+        local_mask = np.ones((h, w), dtype=np.uint8) * 255
+    elif color_mask_crop.shape[:2] == (h, w):
+        local_mask = color_mask_crop
+    else:
+        local_mask = color_mask_crop[y : y + h, x : x + w]
+        if local_mask.size == 0:
+            local_mask = color_mask_crop
+        if local_mask.size and local_mask.shape[:2] != (h, w):
+            local_mask = cv2.resize(local_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+        elif local_mask.size == 0:
+            local_mask = np.ones((h, w), dtype=np.uint8) * 255
+
+    mask_pixels = int(np.count_nonzero(local_mask))
+    bbox_area = max(1, w * h)
+    extent = mask_pixels / bbox_area
+    aspect_ratio = max(w, h) / max(1, min(w, h))
+    extent_score = clamp_float((extent - 0.58) / 0.34)
+    corner_score = rectangular_contour_score(local_mask)
+    rectangularity = clamp_float(extent_score * 0.58 + corner_score * 0.42)
+    brick_ratio_score = max(
+        ratio_score(aspect_ratio, 1.0),
+        ratio_score(aspect_ratio, 1.5),
+        ratio_score(aspect_ratio, 2.0),
+        ratio_score(aspect_ratio, 3.0),
+        ratio_score(aspect_ratio, 4.0),
+    )
+
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 36, 105)
+    inner_mask = (local_mask > 0).astype(np.uint8)
+    if min(w, h) >= 18:
+        erosion = max(1, min(w, h) // 18)
+        inner_mask = cv2.erode(inner_mask, np.ones((3, 3), dtype=np.uint8), iterations=erosion)
+    inner_pixels = max(1, int(np.count_nonzero(inner_mask)))
+    inner_edge_density = np.count_nonzero((edges > 0) & (inner_mask > 0)) / inner_pixels
+    edge_texture_score = clamp_float(inner_edge_density / 0.045)
+    stud_score = stud_like_highlight_score(gray, inner_mask)
+
+    cue = (
+        rectangularity * 0.32
+        + brick_ratio_score * 0.22
+        + edge_texture_score * 0.16
+        + stud_score * 0.30
+    )
+    if extent < 0.62 and stud_score < 0.20:
+        cue *= 0.45
+    elif extent < 0.72 and stud_score < 0.12:
+        cue *= 0.70
+    if corner_score < 0.35 and stud_score < 0.20:
+        cue *= 0.35
+    return {"legoCueScore": round(float(clamp_float(cue)), 4)}
+
+
+def rectangular_contour_score(mask: np.ndarray) -> float:
+    binary = (mask > 0).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return 0.0
+    contour = max(contours, key=cv2.contourArea)
+    area = float(cv2.contourArea(contour))
+    if area <= 0.0:
+        return 0.0
+    x, y, w, h = cv2.boundingRect(contour)
+    extent = area / max(1.0, float(w * h))
+    epsilon = max(1.2, cv2.arcLength(contour, True) * 0.018)
+    vertices = len(cv2.approxPolyDP(contour, epsilon, True))
+    if vertices <= 4:
+        vertex_score = 1.0
+    elif vertices <= 6:
+        vertex_score = 0.72
+    elif vertices <= 8:
+        vertex_score = 0.12
+    else:
+        vertex_score = 0.0
+    return float(clamp_float(vertex_score * 0.62 + clamp_float((extent - 0.62) / 0.30) * 0.38))
+
+
+def stud_like_highlight_score(gray: np.ndarray, mask: np.ndarray) -> float:
+    """Look for small round highlights/shadows that usually come from studs."""
+
+    if gray.size == 0 or min(gray.shape[:2]) < 16 or np.count_nonzero(mask) < 80:
+        return 0.0
+
+    values = gray[mask > 0]
+    if values.size < 80:
+        return 0.0
+
+    bright_threshold = max(float(np.percentile(values, 72)), float(values.mean() + values.std() * 0.30))
+    dark_threshold = min(float(np.percentile(values, 28)), float(values.mean() - values.std() * 0.25))
+    highlight = (((gray >= bright_threshold) | (gray <= dark_threshold)) & (mask > 0)).astype(np.uint8) * 255
+    highlight = cv2.morphologyEx(highlight, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    contours, _ = cv2.findContours(highlight, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    crop_area = max(1, gray.shape[0] * gray.shape[1])
+    min_area = max(6.0, crop_area * 0.002)
+    max_area = max(min_area + 1.0, crop_area * 0.070)
+    round_components = 0
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area < min_area or area > max_area:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 3 or h < 3:
+            continue
+        component_ratio = max(w, h) / max(1, min(w, h))
+        perimeter = max(1.0, float(cv2.arcLength(contour, True)))
+        circularity = 4.0 * np.pi * area / (perimeter * perimeter)
+        if component_ratio <= 1.9 and circularity >= 0.34:
+            round_components += 1
+
+    return float(min(1.0, round_components / 4.0))
 
 
 def foreground_separation_features(image: np.ndarray, box: dict[str, int], color_key: str) -> dict[str, float]:
