@@ -1,17 +1,272 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lego Finder</title>
-    <link rel="stylesheet" href="src/styles.css">
-</head>
-<body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BrickFinder Web Prototype</title>
+    <meta name="description" content="레고 블록 실시간 탐색 앱 웹 프로토타입" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-header">
+        <button class="brand" id="goHome" aria-label="홈으로 이동">
+          <span class="logo-brick" aria-hidden="true">🧱</span>
+          <span>
+            <strong>BrickFinder</strong>
+            <small>web pipeline prototype</small>
+          </span>
+        </button>
+        <div class="header-actions">
+          <button class="ghost-button" id="openImageEval" type="button">사진 테스트</button>
+          <button class="ghost-button" id="openArchitecture">파이프라인</button>
+          <button class="ghost-button" id="openSetScreen">세트 연동</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="screen active" id="homeScreen" aria-labelledby="homeTitle">
+          <div class="hero-grid">
+            <div class="hero-card glass-card">
+              <div class="camera-placeholder" id="queryDropZone">
+                <input id="manualImageInput" type="file" accept="image/*" hidden />
+                <canvas id="manualPreview" width="480" height="300" aria-label="설명서 이미지 미리보기"></canvas>
+                <div class="placeholder-copy" id="manualPlaceholder">
+                  <span>📷</span>
+                  <strong>실시간 카메라 탐지</strong>
+                  <small>휴대폰 카메라로 레고 더미를 비추면 색상 ROI 후보를 바로 표시합니다.</small>
+                </div>
+              </div>
+              <div class="row gap">
+                <button class="primary-button" id="analyzeManualImage">카메라 바로 시작</button>
+                <button class="secondary-button" id="pickManualImage">사진으로 타깃 만들기</button>
+              </div>
+            </div>
+
+            <div class="query-panel glass-card">
+              <p class="eyebrow">live camera search</p>
+              <h1 id="homeTitle">카메라로 바로 레고 부품을 찾습니다</h1>
+              <p class="subcopy">기본 타깃으로 카메라가 바로 열립니다. 바꾸고 싶으면 아래에 “빨간색 2x3 기본 브릭”, “blue 1x4 plate”처럼 입력하세요.</p>
+
+              <label class="input-label" for="textQuery">자연어/텍스트 쿼리</label>
+              <div class="query-input-row">
+                <input id="textQuery" type="text" value="빨간색 2x3 기본 브릭" autocomplete="off" />
+                <button class="primary-button" id="startTextSearch">카메라 탐지 시작</button>
+              </div>
+
+              <div class="row gap wrap">
+                <button class="secondary-button" id="voiceButton">🎤 음성으로 말하기</button>
+                <button class="secondary-button" id="demoButton">⚡ 데모 타깃: 파란 1x4 브릭</button>
+              </div>
+
+              <div class="recent-block">
+                <div class="section-title">최근 탐색</div>
+                <div class="chip-row" id="recentChips"></div>
+              </div>
+
+              <div class="match-card" id="currentTargetCard" hidden>
+                <div class="swatch" id="targetSwatch"></div>
+                <div>
+                  <strong id="targetName">-</strong>
+                  <small id="targetMeta">-</small>
+                </div>
+                <button class="mini-button" id="targetDetailButton">상세</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="imageEvalScreen" aria-labelledby="imageEvalTitle">
+          <div class="image-eval-layout">
+            <div class="glass-card image-eval-card">
+              <button class="ghost-button" id="backFromImageEval">← 홈으로</button>
+              <p class="eyebrow">offline accuracy check</p>
+              <h2 id="imageEvalTitle">정지 이미지에서 블록 찾기</h2>
+              <p class="subcopy">레고 더미 사진을 올리고 찾을 블록을 입력하면 백엔드 검색 결과를 박스로 표시합니다.</p>
+
+              <label class="input-label" for="imageEvalQuery">찾을 블록</label>
+              <div class="query-input-row">
+                <input id="imageEvalQuery" type="text" value="2x4 red brick" autocomplete="off" />
+                <button class="primary-button" id="runImageEval" disabled>이미지 검색</button>
+              </div>
+
+              <input id="imageEvalInput" type="file" accept="image/*" hidden />
+              <div class="row gap wrap">
+                <button class="secondary-button" id="pickImageEval">레고 더미 이미지 선택</button>
+                <span class="fine-print" id="imageEvalFileName">선택된 이미지 없음</span>
+              </div>
+              <p class="fine-print" id="imageEvalStatus">백엔드가 켜져 있어야 합니다: /api/search/image</p>
+            </div>
+
+            <div class="glass-card image-result-card">
+              <div class="image-result-stage">
+                <canvas id="imageEvalCanvas" width="960" height="640" aria-label="이미지 검색 결과"></canvas>
+                <div class="placeholder-copy" id="imageEvalPlaceholder">
+                  <span>▣</span>
+                  <strong>이미지를 선택하면 결과가 여기에 표시됩니다</strong>
+                  <small>상위 후보 bbox, confidence, 색상 지배도, 형상 점수를 함께 확인할 수 있습니다.</small>
+                </div>
+              </div>
+              <div class="image-result-summary">
+                <div>
+                  <div class="section-title">검색 결과</div>
+                  <strong id="imageEvalSummary">아직 실행하지 않음</strong>
+                </div>
+                <div class="metrics-grid compact">
+                  <div><small>proposals</small><strong id="imageEvalProposalCount">0</strong></div>
+                  <div><small>detections</small><strong id="imageEvalDetectionCount">0</strong></div>
+                  <div><small>top score</small><strong id="imageEvalTopScore">0%</strong></div>
+                </div>
+              </div>
+              <div class="image-detection-list" id="imageEvalDetections"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="arScreen" aria-labelledby="arTitle">
+          <div class="ar-layout">
+            <div class="viewer-card">
+              <video id="cameraVideo" playsinline muted autoplay></video>
+              <canvas id="overlayCanvas"></canvas>
+              <canvas id="workCanvas" width="320" height="240" hidden></canvas>
+              <div class="ar-top-bar">
+                <button class="circle-button" id="backFromAr" aria-label="뒤로">←</button>
+                <div>
+                  <small>탐색 중</small>
+                  <h2 id="arTitle">-</h2>
+                </div>
+              </div>
+              <div class="ar-bottom-bar">
+                <div>
+                  <strong id="foundCount">발견: 0개</strong>
+                  <small id="statusText">카메라를 레고 더미 쪽으로 비춰주세요.</small>
+                </div>
+                <div class="row gap">
+                  <button class="secondary-button small" id="pinButton">📌 핀 고정</button>
+                  <button class="secondary-button small" id="snapshotButton">스냅샷</button>
+                </div>
+              </div>
+              <div class="camera-error" id="cameraError" hidden>
+                <strong>카메라 권한이 필요합니다.</strong>
+                <p>브라우저에서 카메라 권한을 허용하거나, 로컬 서버(http://localhost)로 실행해 주세요.</p>
+              </div>
+            </div>
+
+            <aside class="pipeline-panel glass-card">
+              <div class="section-title">실시간 파이프라인</div>
+              <ol class="pipeline-list" id="pipelineList">
+                <li data-step="query">쿼리 인코딩</li>
+                <li data-step="index">부품 DB/HNSW 후보 검색</li>
+                <li data-step="roi">카메라 ROI 히트맵</li>
+                <li data-step="verify">기하학적 검증</li>
+                <li data-step="render">AR 하이라이트 렌더링</li>
+              </ol>
+
+              <div class="metrics-grid">
+                <div><small>FPS</small><strong id="fpsMetric">0</strong></div>
+                <div><small>latency</small><strong id="latencyMetric">0ms</strong></div>
+                <div><small>candidates</small><strong id="candidateMetric">0</strong></div>
+              </div>
+
+              <div class="heatmap-card">
+                <div class="section-title">ROI 미니맵</div>
+                <canvas id="miniHeatmap" width="210" height="150"></canvas>
+              </div>
+
+              <details open>
+                <summary>웹 MVP 구현 방식</summary>
+                <p>
+                  현재 프로토타입은 색상 기반 ROI + 연결요소 분석으로 즉시 동작합니다.
+                  실제 제품 단계에서는 같은 인터페이스에 ONNX/MediaPipe 기반 검출·분할 모델을 꽂아 교체합니다.
+                </p>
+              </details>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen" id="detailScreen" aria-labelledby="detailTitle">
+          <div class="detail-card glass-card">
+            <button class="ghost-button" id="backFromDetail">← 돌아가기</button>
+            <div class="render-box" id="detailRenderBox">
+              <div class="lego-render" id="legoRender"></div>
+            </div>
+            <p class="eyebrow">part detail</p>
+            <h2 id="detailTitle">부품 상세</h2>
+            <dl class="detail-list">
+              <div><dt>이름</dt><dd id="detailName">-</dd></div>
+              <div><dt>색상</dt><dd id="detailColor">-</dd></div>
+              <div><dt>파트 번호</dt><dd id="detailPartNum">-</dd></div>
+              <div><dt>카테고리</dt><dd id="detailCategory">-</dd></div>
+              <div><dt>쿼리 소스</dt><dd id="detailSource">-</dd></div>
+            </dl>
+            <button class="primary-button wide" id="startFromDetail">🔍 이 부품으로 탐색 시작</button>
+          </div>
+        </section>
+
+        <section class="screen" id="setScreen" aria-labelledby="setTitle">
+          <div class="set-grid">
+            <div class="glass-card set-search-card">
+              <button class="ghost-button" id="backFromSet">← 홈으로</button>
+              <p class="eyebrow">Rebrickable set import</p>
+              <h2 id="setTitle">세트 번호로 부품 목록 불러오기</h2>
+              <p class="subcopy">API 키가 없으면 75257-1 샘플 데이터로 동작합니다.</p>
+
+              <label class="input-label" for="setNumberInput">세트 번호</label>
+              <input id="setNumberInput" type="text" value="75257-1" />
+
+              <label class="input-label" for="apiKeyInput">Rebrickable API Key 선택 입력</label>
+              <input id="apiKeyInput" type="password" placeholder="key 없이 샘플 모드 사용 가능" />
+
+              <button class="primary-button wide" id="loadSetButton">📦 부품 목록 불러오기</button>
+              <p class="fine-print">백엔드를 함께 실행하면 API 키가 서버 프록시에서 사용됩니다. 프론트만 실행할 경우 샘플 데이터로 대체됩니다.</p>
+            </div>
+            <div class="glass-card parts-list-card">
+              <div class="row between">
+                <div>
+                  <div class="section-title">부품 목록</div>
+                  <h3 id="setName">아직 불러오지 않음</h3>
+                </div>
+                <span class="pill" id="setCount">0개</span>
+              </div>
+              <div class="parts-list" id="setPartsList"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="architectureScreen" aria-labelledby="architectureTitle">
+          <div class="glass-card architecture-card">
+            <button class="ghost-button" id="backFromArchitecture">← 홈으로</button>
+            <p class="eyebrow">service pipeline</p>
+            <h2 id="architectureTitle">웹 프로토타입 파이프라인</h2>
+            <div class="architecture-flow">
+              <div>텍스트/음성/이미지/세트 선택</div>
+              <span>→</span>
+              <div>쿼리 파서 + 임베딩 API</div>
+              <span>→</span>
+              <div>부품 DB + HNSW/Qdrant</div>
+              <span>→</span>
+              <div>브라우저 카메라 ROI 탐색</div>
+              <span>→</span>
+              <div>Canvas AR 하이라이트</div>
+            </div>
+            <div class="two-column-note">
+              <div>
+                <h3>현재 구현</h3>
+                <p>브라우저에서 HSV 색상 분리, 연결요소 분석, 후보 박스 렌더링을 수행합니다. 프로토타입 검증과 UI/UX 피드백 수집에 적합합니다.</p>
+              </div>
+              <div>
+                <h3>제품화 교체 지점</h3>
+                <p>MobileCLIP/CLIP 임베딩, YOLO/SAM 계열 분할, ORB/RANSAC 또는 추적기를 백엔드와 Web Worker에 연결하도록 모듈 경계를 분리했습니다.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
     <script>
-        // 배포된 백엔드 URL 설정 (Render에서 배포된 엔드포인트)
-        window.BRICKFINDER_API_BASE = 'https://finding-lego.onrender.com';
+      window.BRICKFINDER_API_BASE = 'https://lego-finder-backend.onrender.com';
     </script>
-    <script src="src/app.js"></script>
-    <div id="app"></div>
-</body>
+    <script type="module" src="./src/app.js"></script>
+  </body>
 </html>
