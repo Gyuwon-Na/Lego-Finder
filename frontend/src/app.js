@@ -1497,9 +1497,9 @@ function init() {
   renderSetParts(SAMPLE_SET);
   if (location.hash === '#image-eval') {
     openImageEvalScreen();
-  } else {
-    startSearch(initialTarget);
   }
+  // Do not auto-start the camera on page load. Let the user enter a query
+  // and click the start button to begin a live search.
 }
 
 init();
