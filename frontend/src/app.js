@@ -314,9 +314,8 @@ async function startCamera() {
     requestAnimationFrame(processFrame);
   } catch (error) {
     console.error(error);
-    dom.cameraError.hidden = false;
+    // Silently fail without showing error UI
     state.running = false;
-    drawNoCameraOverlay();
   }
 }
 
