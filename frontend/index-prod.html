@@ -8,9 +8,8 @@
 </head>
 <body>
     <script>
-        // 배포된 백엔드 URL 설정
-        // Cloudflare Pages 환경변수에서 가져오기
-        window.BRICKFINDER_API_BASE = '/api';
+        // 배포된 백엔드 URL 설정 (Render에서 배포된 엔드포인트)
+        window.BRICKFINDER_API_BASE = 'https://finding-lego.onrender.com';
     </script>
     <script src="src/app.js"></script>
     <div id="app"></div>
